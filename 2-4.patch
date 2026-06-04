@@ -1,0 +1,242 @@
+diff --git a/isort/main.py b/isort/main.py
+index 72d95b97..bae7b135 100644
+--- a/isort/main.py
++++ b/isort/main.py
+@@ -916,6 +916,12 @@ def identify_imports_main(
+         default=False,
+         help="Only identify imports that occur in before functions or classes.",
+     )
++    parser.add_argument(
++        "--json",
++        action="store_true",
++        default=False,
++        help="Output imports as a JSON array.",
++    )
+ 
+     target_group = parser.add_argument_group("target options")
+     target_group.add_argument(
+@@ -974,16 +980,28 @@ def identify_imports_main(
+             top_only=arguments.top_only,
+             follow_links=arguments.follow_links,
+         )
+-
+-    for identified_import in identified_imports:
+-        if arguments.unique == api.ImportKey.PACKAGE:
+-            print(identified_import.module.split(".")[0])
+-        elif arguments.unique == api.ImportKey.MODULE:
+-            print(identified_import.module)
+-        elif arguments.unique == api.ImportKey.ATTRIBUTE:
+-            print(f"{identified_import.module}.{identified_import.attribute}")
+-        else:
+-            print(str(identified_import))
++    
++    if arguments.json:
++        # Convert imports to JSON serializable format
++        import_list = []
++        for identified_import in identified_imports:
++            import_dict = identified_import._asdict()
++            # Convert Path to string for JSON serialization
++            if import_dict.get("file_path") is not None:
++                import_dict["file_path"] = str(import_dict["file_path"])
++            import_list.append(import_dict)
++        # Use _preconvert from earlier in the file
++        print(json.dumps(import_list, indent=4, separators=(",", ": "), default=_preconvert))
++    else:
++        for identified_import in identified_imports:
++            if arguments.unique == api.ImportKey.PACKAGE:
++                print(identified_import.module.split(".")[0])
++            elif arguments.unique == api.ImportKey.MODULE:
++                print(identified_import.module)
++            elif arguments.unique == api.ImportKey.ATTRIBUTE:
++                print(f"{identified_import.module}.{identified_import.attribute}")
++            else:
++                print(str(identified_import))
+ 
+ 
+ # Ignore DeepSource cyclomatic complexity check for this function. It is one
+diff --git a/simple_test.py b/simple_test.py
+new file mode 100644
+index 00000000..874419b6
+--- /dev/null
++++ b/simple_test.py
+@@ -0,0 +1,60 @@
++#!/usr/bin/env python3
++import sys
++from io import StringIO
++import json
++from pathlib import Path
++
++# Add the project root to the path
++sys.path.insert(0, '/app/isortfork')
++
++import isort
++from isort import identify, api
++
++def test_identify():
++    test_code = """
++import os
++import sys
++from pathlib import Path
++from collections import defaultdict as dd
++import json as js
++
++def test_function():
++    import math
++    from typing import List, Dict
++
++cimport numpy as np
++"""
++    print("Testing with stdin-like data:")
++    print("-" * 50)
++    
++    # Test using identify module directly
++    input_stream = StringIO(test_code)
++    identified = list(identify.imports(input_stream))
++    
++    print(f"Found {len(identified)} imports:\n")
++    
++    # Convert to JSON
++    import_list = []
++    for imp in identified:
++        imp_dict = imp._asdict()
++        if imp_dict.get('file_path') is not None:
++            imp_dict['file_path'] = str(imp_dict['file_path'])
++        import_list.append(imp_dict)
++    
++    print(json.dumps(import_list, indent=4, separators=(",", ": ")))
++
++def test_with_file():
++    print("\n\nTesting with test_imports.py:")
++    print("-" * 50)
++    identified = list(api.find_imports_in_file("/app/isortfork/test_imports.py"))
++    import_list = []
++    for imp in identified:
++        imp_dict = imp._asdict()
++        if imp_dict.get('file_path') is not None:
++            imp_dict['file_path'] = str(imp_dict['file_path'])
++        import_list.append(imp_dict)
++    print(json.dumps(import_list, indent=4, separators=(",", ": ")))
++
++if __name__ == "__main__":
++    test_identify()
++    test_with_file()
+diff --git a/test_imports.py b/test_imports.py
+new file mode 100644
+index 00000000..542ba128
+--- /dev/null
++++ b/test_imports.py
+@@ -0,0 +1,11 @@
++import os
++import sys
++from pathlib import Path
++from collections import defaultdict
++import json as js
++
++def test_function():
++    import math
++    from typing import List, Dict
++
++cimport numpy as np
+diff --git a/test_json_feature.py b/test_json_feature.py
+new file mode 100644
+index 00000000..a3d69e5c
+--- /dev/null
++++ b/test_json_feature.py
+@@ -0,0 +1,38 @@
++#!/usr/bin/env python3
++import sys
++from io import StringIO
++import json
++
++# Add the project root to the path
++sys.path.insert(0, '/app/isortfork')
++
++from isort.main import identify_imports_main
++
++# Test 1: Test with file path
++print("Test 1: Testing with file path test_imports.py")
++print("-" * 50)
++try:
++    identify_imports_main(['--json', 'test_imports.py'])
++except Exception as e:
++    print(f"Error: {e}")
++print("\n" + "=" * 50 + "\n")
++
++# Test 2: Test with stdin
++print("Test 2: Testing with stdin")
++print("-" * 50)
++test_code = """
++import os
++import sys
++from pathlib import Path
++
++def test_function():
++    import math
++    from typing import List, Dict
++
++cimport numpy as np
++"""
++stdin_buf = StringIO(test_code)
++try:
++    identify_imports_main(['--json', '-'], stdin=stdin_buf)
++except Exception as e:
++    print(f"Error: {e}")
+diff --git a/test_logic.py b/test_logic.py
+new file mode 100644
+index 00000000..6520906e
+--- /dev/null
++++ b/test_logic.py
+@@ -0,0 +1,53 @@
++#!/usr/bin/env python3
++import sys
++from io import StringIO
++import json
++from pathlib import Path
++sys.path.insert(0, '/app/isortfork')
++
++import isort
++from isort import identify
++
++test_code = """
++import os
++import sys
++from pathlib import Path
++from collections import defaultdict as dd
++import json as js
++
++def test_function():
++    import math
++    from typing import List, Dict
++
++cimport numpy as np
++"""
++
++input_stream = StringIO(test_code)
++identified = list(identify.imports(input_stream))
++
++print("Testing JSON conversion logic:")
++print("=" * 50)
++
++# Test our conversion logic
++import_list = []
++for identified_import in identified:
++    import_dict = identified_import._asdict()
++    if import_dict.get("file_path") is not None:
++        import_dict["file_path"] = str(import_dict["file_path"])
++    import_list.append(import_dict)
++
++# Preconvert function from main.py
++def _preconvert(item):
++    if isinstance(item, (set, frozenset)):
++        return list(item)
++    if isinstance(item, Path):
++        return str(item)
++    if callable(item) and hasattr(item, "__name__"):
++        return str(item.__name__)
++    raise TypeError(f"Unserializable object {item} of type {type(item)}")
++
++# Test dumping
++json_output = json.dumps(import_list, indent=4, separators=(",", ": "), default=_preconvert)
++print(json_output)
++print("\n" + "=" * 50)
++print("✅ JSON conversion works!")
