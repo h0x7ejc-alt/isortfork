@@ -1,0 +1,101 @@
+diff --git a/isort/main.py b/isort/main.py
+index 72d95b97..ffa273ee 100644
+--- a/isort/main.py
++++ b/isort/main.py
+@@ -1,6 +1,7 @@
+ """Tool for sorting imports alphabetically, and automatically separated into sections."""
+ 
+ import argparse
++import fnmatch
+ import functools
+ import json
+ import os
+@@ -16,6 +17,8 @@ from warnings import warn
+ from . import __version__, api, files, sections
+ from .exceptions import FileSkipped, ISortError, UnsupportedEncoding
+ from .format import create_terminal_printer
++from .identify import imports
++from .io import File
+ from .logo import ASCII_ART
+ from .profiles import profiles
+ from .settings import VALID_PY_TARGETS, Config, find_all_configs
+@@ -295,6 +298,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
+         action="store_true",
+         help="Automatically sort all re-exports (module level __all__ collections)",
+     )
++    general_group.add_argument(
++        "--show-path-decision",
++        dest="show_path_decision",
++        action="store_true",
++        help="Shows why a file is skipped or why an import is assigned to a specific section (STDLIB, THIRDPARTY, FIRSTPARTY, etc.)",
++    )
+ 
+     target_group.add_argument(
+         "files", nargs="*", help="One or more Python source files that need their imports sorted."
+@@ -997,6 +1006,7 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+ 
+     show_config: bool = arguments.pop("show_config", False)
+     show_files: bool = arguments.pop("show_files", False)
++    show_path_decision: bool = arguments.pop("show_path_decision", False)
+     if show_config and show_files:
+         sys.exit("Error: either specify show-config or show-files not both.")
+ 
+@@ -1052,6 +1062,58 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+         config_dict["src_paths"] = set(config_dict.get("src_paths", ()))
+ 
+     config = Config(**config_dict)
++    
++    if show_path_decision:
++        for target in file_names:
++            target_path = Path(target)
++            print(f"=== Analyzing: {target_path} ===")
++            
++            # 检查是否是文件或目录
++            if target_path.exists():
++                if target_path.is_file():
++                    # 检查文件是否被跳过
++                    is_skipped = config.is_skipped(target_path.resolve())
++                    if is_skipped:
++                        print(f"✗ File {target_path} would be skipped")
++                        # 检查可能导致跳过的原因
++                        file_name = str(target_path)
++                        for skip_path in config.skips:
++                            if skip_path in file_name:
++                                print(f"  - Matches skip path: {skip_path}")
++                        for sglob in config.skip_globs:
++                            if fnmatch.fnmatch(file_name, sglob) or fnmatch.fnmatch("/" + file_name, sglob):
++                                print(f"  - Matches skip glob: {sglob}")
++                        if not config.is_supported_filetype(file_name):
++                            print(f"  - Not a supported file type")
++                    else:
++                        print(f"✓ File {target_path} would be processed")
++                    
++                    # 分析文件中的 imports
++                    if config.is_supported_filetype(str(target_path)):
++                        try:
++                            with File.read(target_path) as source_file:
++                                print("\n--- Import Decisions ---")
++                                for imp in imports(source_file.stream, config=config, file_path=source_file.path):
++                                    module_name = imp.module
++                                    if not module_name and imp.statement().startswith("from ."):
++                                        module_name = "."
++                                    
++                                    if module_name:
++                                        section, reason = api.place_module_with_reason(module_name, config)
++                                        print(f"{imp.statement().strip()}")
++                                        print(f"  → {section}: {reason}\n")
++                        except Exception as e:
++                            print(f"Error reading file: {e}")
++                elif target_path.is_dir():
++                    print(f"Directory: {target_path}")
++                    print("Use with a specific Python file or module name to see import decisions.")
++            else:
++                # 假设这是一个模块名，直接判断
++                print(f"Module name: {target}")
++                section, reason = api.place_module_with_reason(target, config)
++                print(f"→ {section}: {reason}")
++        return
++    
+     if show_config:
+         print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
+         return
