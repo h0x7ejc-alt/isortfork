@@ -916,6 +916,12 @@ def identify_imports_main(
         default=False,
         help="Only identify imports that occur in before functions or classes.",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output imports as a JSON array.",
+    )
 
     target_group = parser.add_argument_group("target options")
     target_group.add_argument(
@@ -974,16 +980,28 @@ def identify_imports_main(
             top_only=arguments.top_only,
             follow_links=arguments.follow_links,
         )
-
-    for identified_import in identified_imports:
-        if arguments.unique == api.ImportKey.PACKAGE:
-            print(identified_import.module.split(".")[0])
-        elif arguments.unique == api.ImportKey.MODULE:
-            print(identified_import.module)
-        elif arguments.unique == api.ImportKey.ATTRIBUTE:
-            print(f"{identified_import.module}.{identified_import.attribute}")
-        else:
-            print(str(identified_import))
+    
+    if arguments.json:
+        # Convert imports to JSON serializable format
+        import_list = []
+        for identified_import in identified_imports:
+            import_dict = identified_import._asdict()
+            # Convert Path to string for JSON serialization
+            if import_dict.get("file_path") is not None:
+                import_dict["file_path"] = str(import_dict["file_path"])
+            import_list.append(import_dict)
+        # Use _preconvert from earlier in the file
+        print(json.dumps(import_list, indent=4, separators=(",", ": "), default=_preconvert))
+    else:
+        for identified_import in identified_imports:
+            if arguments.unique == api.ImportKey.PACKAGE:
+                print(identified_import.module.split(".")[0])
+            elif arguments.unique == api.ImportKey.MODULE:
+                print(identified_import.module)
+            elif arguments.unique == api.ImportKey.ATTRIBUTE:
+                print(f"{identified_import.module}.{identified_import.attribute}")
+            else:
+                print(str(identified_import))
 
 
 # Ignore DeepSource cyclomatic complexity check for this function. It is one
