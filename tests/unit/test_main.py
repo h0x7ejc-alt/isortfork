@@ -1010,6 +1010,55 @@ def test_identify_imports_main(tmpdir, capsys):
     file_imports_with_dupes = (
         f"{some_file}:1 import mod2\n{some_file}:2 import mod2\n{some_file}:4 import mod1\n"
     )
+    file_imports_json = [
+        {
+            "line_number": 1,
+            "indented": False,
+            "module": "mod2",
+            "attribute": None,
+            "alias": None,
+            "cimport": False,
+            "file_path": str(some_file),
+        },
+        {
+            "line_number": 2,
+            "indented": False,
+            "module": "mod2",
+            "attribute": None,
+            "alias": None,
+            "cimport": False,
+            "file_path": str(some_file),
+        },
+        {
+            "line_number": 4,
+            "indented": False,
+            "module": "mod1",
+            "attribute": None,
+            "alias": None,
+            "cimport": False,
+            "file_path": str(some_file),
+        },
+    ]
+    stdin_imports_json = [
+        {
+            "line_number": 1,
+            "indented": False,
+            "module": "mod2",
+            "attribute": None,
+            "alias": None,
+            "cimport": False,
+            "file_path": None,
+        },
+        {
+            "line_number": 4,
+            "indented": False,
+            "module": "mod1",
+            "attribute": None,
+            "alias": None,
+            "cimport": False,
+            "file_path": None,
+        },
+    ]
 
     main.identify_imports_main([str(some_file), "--unique"])
     out, error = capsys.readouterr()
@@ -1021,6 +1070,11 @@ def test_identify_imports_main(tmpdir, capsys):
     assert out.replace("\r\n", "\n") == file_imports_with_dupes
     assert not error
 
+    main.identify_imports_main([str(some_file), "--json"])
+    out, error = capsys.readouterr()
+    assert json.loads(out) == file_imports_json
+    assert not error
+
     main.identify_imports_main(["-", "--unique"], stdin=as_stream(file_content))
     out, error = capsys.readouterr()
     assert out.replace("\r\n", "\n") == file_imports.replace(str(some_file), "")
@@ -1028,6 +1082,11 @@ def test_identify_imports_main(tmpdir, capsys):
     main.identify_imports_main(["-"], stdin=as_stream(file_content))
     out, error = capsys.readouterr()
     assert out.replace("\r\n", "\n") == file_imports_with_dupes.replace(str(some_file), "")
+
+    main.identify_imports_main(["-", "--json", "--unique"], stdin=as_stream(file_content))
+    out, error = capsys.readouterr()
+    assert json.loads(out) == stdin_imports_json
+    assert not error
 
     main.identify_imports_main([str(tmpdir)])
 
@@ -1042,6 +1101,23 @@ def test_identify_imports_main(tmpdir, capsys):
     main.identify_imports_main(["-", "--attributes"], stdin=as_stream(file_content))
     out, error = capsys.readouterr()
     assert len(out.split("\n")) == 3
+
+
+def test_identify_imports_main_conflicts(tmpdir, capsys):
+    some_file = tmpdir.join("some_file.py")
+    some_file.write("import mod2\n")
+
+    with pytest.raises(SystemExit):
+        main.identify_imports_main([str(some_file), "--json", "--packages"])
+    out, error = capsys.readouterr()
+    assert not out
+    assert "--json cannot be combined with --packages, --modules, or --attributes" in error
+
+    with pytest.raises(SystemExit):
+        main.identify_imports_main([str(some_file), "-"])
+    out, error = capsys.readouterr()
+    assert not out
+    assert "`-` cannot be combined with file paths. Use stdin alone or pass file paths." in error
 
 
 def test_gitignore(capsys, tmp_path: pathlib.Path):

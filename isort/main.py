@@ -916,6 +916,12 @@ def identify_imports_main(
         default=False,
         help="Only identify imports that occur in before functions or classes.",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Outputs identified imports as a JSON array of import records.",
+    )
 
     target_group = parser.add_argument_group("target options")
     target_group.add_argument(
@@ -959,7 +965,20 @@ def identify_imports_main(
 
     arguments = parser.parse_args(argv)
 
+    if arguments.json and arguments.unique in (
+        api.ImportKey.PACKAGE,
+        api.ImportKey.MODULE,
+        api.ImportKey.ATTRIBUTE,
+    ):
+        parser.error(
+            "--json cannot be combined with --packages, --modules, or --attributes because "
+            "those modes output scalar values instead of full import records."
+        )
+
     file_names = arguments.files
+    if "-" in file_names and file_names != ["-"]:
+        parser.error("`-` cannot be combined with file paths. Use stdin alone or pass file paths.")
+
     if file_names == ["-"]:
         identified_imports = api.find_imports_in_stream(
             sys.stdin if stdin is None else stdin,
@@ -974,6 +993,10 @@ def identify_imports_main(
             top_only=arguments.top_only,
             follow_links=arguments.follow_links,
         )
+
+    if arguments.json:
+        print(json.dumps([identified_import._asdict() for identified_import in identified_imports], default=_preconvert))
+        return
 
     for identified_import in identified_imports:
         if arguments.unique == api.ImportKey.PACKAGE:
