@@ -1043,6 +1043,16 @@ def test_identify_imports_main(tmpdir, capsys):
     out, error = capsys.readouterr()
     assert len(out.split("\n")) == 3
 
+    main.identify_imports_main(["-", "--json"], stdin=as_stream(file_content))
+    out, error = capsys.readouterr()
+    json_out = json.loads(out)
+    assert len(json_out) == 4
+    assert json_out[0]["module"] == "mod2"
+    assert json_out[0]["line_number"] == 1
+    assert json_out[1]["module"] == "mod2"
+    assert json_out[2]["module"] == "mod1"
+    assert "file_path" in json_out[0]
+
 
 def test_gitignore(capsys, tmp_path: pathlib.Path):
     import_content = """

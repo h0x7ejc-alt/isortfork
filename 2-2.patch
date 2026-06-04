@@ -1,0 +1,81 @@
+diff --git a/isort/main.py b/isort/main.py
+index 72d95b97..6162884c 100644
+--- a/isort/main.py
++++ b/isort/main.py
+@@ -925,6 +925,14 @@ def identify_imports_main(
+         help="Tells isort to follow symlinks that are encountered when running recursively.",
+     )
+ 
++    output_group = parser.add_argument_group("output options")
++    output_group.add_argument(
++        "--json",
++        action="store_true",
++        default=False,
++        help="Output identified imports as a JSON array.",
++    )
++
+     uniqueness = parser.add_mutually_exclusive_group()
+     uniqueness.add_argument(
+         "--unique",
+@@ -975,15 +983,31 @@ def identify_imports_main(
+             follow_links=arguments.follow_links,
+         )
+ 
+-    for identified_import in identified_imports:
+-        if arguments.unique == api.ImportKey.PACKAGE:
+-            print(identified_import.module.split(".")[0])
+-        elif arguments.unique == api.ImportKey.MODULE:
+-            print(identified_import.module)
+-        elif arguments.unique == api.ImportKey.ATTRIBUTE:
+-            print(f"{identified_import.module}.{identified_import.attribute}")
+-        else:
+-            print(str(identified_import))
++    if arguments.json:
++        output = []
++        for identified_import in identified_imports:
++            output.append(
++                {
++                    "line_number": identified_import.line_number,
++                    "module": identified_import.module,
++                    "attribute": identified_import.attribute,
++                    "alias": identified_import.alias,
++                    "cimport": identified_import.cimport,
++                    "indented": identified_import.indented,
++                    "file_path": str(identified_import.file_path) if identified_import.file_path else None,
++                }
++            )
++        print(json.dumps(output))
++    else:
++        for identified_import in identified_imports:
++            if arguments.unique == api.ImportKey.PACKAGE:
++                print(identified_import.module.split(".")[0])
++            elif arguments.unique == api.ImportKey.MODULE:
++                print(identified_import.module)
++            elif arguments.unique == api.ImportKey.ATTRIBUTE:
++                print(f"{identified_import.module}.{identified_import.attribute}")
++            else:
++                print(str(identified_import))
+ 
+ 
+ # Ignore DeepSource cyclomatic complexity check for this function. It is one
+diff --git a/tests/unit/test_main.py b/tests/unit/test_main.py
+index 79421169..8f3481e4 100644
+--- a/tests/unit/test_main.py
++++ b/tests/unit/test_main.py
+@@ -1043,6 +1043,16 @@ def test_identify_imports_main(tmpdir, capsys):
+     out, error = capsys.readouterr()
+     assert len(out.split("\n")) == 3
+ 
++    main.identify_imports_main(["-", "--json"], stdin=as_stream(file_content))
++    out, error = capsys.readouterr()
++    json_out = json.loads(out)
++    assert len(json_out) == 4
++    assert json_out[0]["module"] == "mod2"
++    assert json_out[0]["line_number"] == 1
++    assert json_out[1]["module"] == "mod2"
++    assert json_out[2]["module"] == "mod1"
++    assert "file_path" in json_out[0]
++
+ 
+ def test_gitignore(capsys, tmp_path: pathlib.Path):
+     import_content = """
