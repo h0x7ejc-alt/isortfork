@@ -957,6 +957,14 @@ def identify_imports_main(
         help="If true, isort will only identify the unique attributes imported.",
     )
 
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output identified imports as a JSON array. Each element contains "
+        "line_number, module, attribute, alias, cimport, indented, and file_path fields.",
+    )
+
     arguments = parser.parse_args(argv)
 
     file_names = arguments.files
@@ -975,15 +983,30 @@ def identify_imports_main(
             follow_links=arguments.follow_links,
         )
 
-    for identified_import in identified_imports:
-        if arguments.unique == api.ImportKey.PACKAGE:
-            print(identified_import.module.split(".")[0])
-        elif arguments.unique == api.ImportKey.MODULE:
-            print(identified_import.module)
-        elif arguments.unique == api.ImportKey.ATTRIBUTE:
-            print(f"{identified_import.module}.{identified_import.attribute}")
-        else:
-            print(str(identified_import))
+    if arguments.json:
+        import_list = []
+        for identified_import in identified_imports:
+            import_dict = {
+                "line_number": identified_import.line_number,
+                "module": identified_import.module,
+                "attribute": identified_import.attribute,
+                "alias": identified_import.alias,
+                "cimport": identified_import.cimport,
+                "indented": identified_import.indented,
+                "file_path": str(identified_import.file_path) if identified_import.file_path else None,
+            }
+            import_list.append(import_dict)
+        print(json.dumps(import_list, indent=2))
+    else:
+        for identified_import in identified_imports:
+            if arguments.unique == api.ImportKey.PACKAGE:
+                print(identified_import.module.split(".")[0])
+            elif arguments.unique == api.ImportKey.MODULE:
+                print(identified_import.module)
+            elif arguments.unique == api.ImportKey.ATTRIBUTE:
+                print(f"{identified_import.module}.{identified_import.attribute}")
+            else:
+                print(str(identified_import))
 
 
 # Ignore DeepSource cyclomatic complexity check for this function. It is one
