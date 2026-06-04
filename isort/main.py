@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from warnings import warn
 
-from . import __version__, api, files, sections
+from . import __version__, api, files, identify, sections
 from .exceptions import FileSkipped, ISortError, UnsupportedEncoding
 from .format import create_terminal_printer
 from .logo import ASCII_ART
@@ -900,6 +900,18 @@ def _preconvert(item: Any) -> str | list[Any]:
     raise TypeError(f"Unserializable object {item} of type {type(item)}")
 
 
+def _import_to_dict(import_obj: "identify.Import") -> dict[str, Any]:
+    return {
+        "line_number": import_obj.line_number,
+        "module": import_obj.module,
+        "attribute": import_obj.attribute,
+        "alias": import_obj.alias,
+        "cimport": import_obj.cimport,
+        "indented": import_obj.indented,
+        "file_path": str(import_obj.file_path) if import_obj.file_path else None,
+    }
+
+
 def identify_imports_main(
     argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None
 ) -> None:
@@ -957,6 +969,17 @@ def identify_imports_main(
         help="If true, isort will only identify the unique attributes imported.",
     )
 
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output identified imports as a JSON array. "
+        "Each element contains line_number, module, attribute, alias, "
+        "cimport, indented, and file_path. "
+        "Can be combined with --unique, --packages, --modules, or --attributes; "
+        "the uniqueness filter is applied before JSON serialization.",
+    )
+
     arguments = parser.parse_args(argv)
 
     file_names = arguments.files
@@ -975,15 +998,19 @@ def identify_imports_main(
             follow_links=arguments.follow_links,
         )
 
-    for identified_import in identified_imports:
-        if arguments.unique == api.ImportKey.PACKAGE:
-            print(identified_import.module.split(".")[0])
-        elif arguments.unique == api.ImportKey.MODULE:
-            print(identified_import.module)
-        elif arguments.unique == api.ImportKey.ATTRIBUTE:
-            print(f"{identified_import.module}.{identified_import.attribute}")
-        else:
-            print(str(identified_import))
+    if arguments.json:
+        import_list = [_import_to_dict(imp) for imp in identified_imports]
+        print(json.dumps(import_list, indent=2))
+    else:
+        for identified_import in identified_imports:
+            if arguments.unique == api.ImportKey.PACKAGE:
+                print(identified_import.module.split(".")[0])
+            elif arguments.unique == api.ImportKey.MODULE:
+                print(identified_import.module)
+            elif arguments.unique == api.ImportKey.ATTRIBUTE:
+                print(f"{identified_import.module}.{identified_import.attribute}")
+            else:
+                print(str(identified_import))
 
 
 # Ignore DeepSource cyclomatic complexity check for this function. It is one
