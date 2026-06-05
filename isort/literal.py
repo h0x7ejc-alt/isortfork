@@ -100,6 +100,18 @@ def _unique_list(value: list[Any], printer: ISortPrettyPrinter) -> str:
     return printer.pformat(sorted(set(value)))
 
 
+@register_type("unique-dict", dict)
+def _unique_dict(value: dict[Any, Any], printer: ISortPrettyPrinter) -> str:
+    seen_values: list[Any] = []
+    unique_items: list[tuple[Any, Any]] = []
+    for k, v in reversed(list(value.items())):
+        if v not in seen_values:
+            seen_values.append(v)
+            unique_items.append((k, v))
+    unique_items.reverse()
+    return printer.pformat(dict(sorted(unique_items, key=lambda item: item[1])))
+
+
 @register_type("set", set)
 def _set(value: set[Any], printer: ISortPrettyPrinter) -> str:
     return "{" + printer.pformat(tuple(sorted(value)))[1:-1] + "}"

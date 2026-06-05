@@ -50,7 +50,10 @@
 
 
 # # isort: dict
-# y = {"z": "z", "b": "b", "b": "c"}"""
+# y = {"z": "z", "b": "b", "b": "c"}
+
+# # isort: unique-dict
+# z = {"a": "c", "b": "c", "c": "z"}"""
 #         )
 #         == """
 # import a
@@ -78,7 +81,10 @@
 
 
 # # isort: dict
-# y = {'b': 'c', 'z': 'z'}"""
+# y = {'b': 'c', 'z': 'z'}
+
+# # isort: unique-dict
+# z = {'b': 'c', 'c': 'z'}"""
 #     )
 #     assert (
 #         isort.code(
@@ -114,7 +120,10 @@
 # a = 3
 
 # # isort: dict
-# y = {"z": "z", "b": "b", "b": "c"}""",
+# y = {"z": "z", "b": "b", "b": "c"}
+
+# # isort: unique-dict
+# z = {"a": "c", "b": "c", "c": "z"}""",
 #             formatter="example",
 #         )
 #         == """
@@ -148,7 +157,10 @@
 # d = 1
 
 # # isort: dict
-# y = {"b": "c", "z": "z"}"""
+# y = {"b": "c", "z": "z"}
+
+# # isort: unique-dict
+# z = {"b": "c", "c": "z"}"""
 #     )
 #     assert api.sort_stream(
 #         input_stream=StringIO(
