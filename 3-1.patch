@@ -1,0 +1,294 @@
+diff --git a/isort/main.py b/isort/main.py
+index 72d95b97..bd39c8c9 100644
+--- a/isort/main.py
++++ b/isort/main.py
+@@ -199,6 +199,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
+         action="store_true",
+         help="See the files isort will be run against with the current config options.",
+     )
++    general_group.add_argument(
++        "--show-path-decision",
++        dest="show_path_decision",
++        help="Show why a path would be skipped, or why a module would be placed in a section.",
++    )
+     general_group.add_argument(
+         "--df",
+         "--diff",
+@@ -900,6 +905,57 @@ def _preconvert(item: Any) -> str | list[Any]:
+     raise TypeError(f"Unserializable object {item} of type {type(item)}")
+ 
+ 
++def _looks_like_path_target(target: str, config: Config) -> bool:
++    extension = os.path.splitext(target)[1].lstrip(".")
++    return bool(
++        os.path.isabs(target)
++        or os.path.sep in target
++        or (os.path.altsep and os.path.altsep in target)
++        or Path(target).exists()
++        or Path(target).is_symlink()
++        or target in {".", ".."}
++        or target.endswith("~")
++        or extension in config.supported_extensions
++        or extension in config.blocked_extensions
++    )
++
++
++def _path_decision(target: str, config: Config) -> tuple[str, str]:
++    path = Path(target)
++    supported_reason = None
++    if path.is_file():
++        supported_reason = config.supported_filetype_reason(str(path))
++        if supported_reason is not None:
++            return ("not_discovered", supported_reason)
++
++    skipped_reason = config.skipped_reason(path)
++    if skipped_reason is not None:
++        return ("skipped", skipped_reason)
++
++    if path.is_file():
++        try:
++            api.check_file(path, config=config, disregard_skip=True)
++        except FileSkipped as error:
++            return ("skipped", error.message)
++
++    return ("kept", "Path would be processed with the current settings.")
++
++
++def _show_path_decision(target: str, config: Config) -> None:
++    if _looks_like_path_target(target, config):
++        display_target = os.path.abspath(target)
++        decision, reason = _path_decision(target, config)
++        print(f"path: {display_target}")
++        print(f"decision: {decision}")
++        print(f"reason: {reason}")
++        return
++
++    section, reason = api.place_module_with_reason(target, config=config)
++    print(f"module: {target}")
++    print(f"section: {section}")
++    print(f"reason: {reason}")
++
++
+ def identify_imports_main(
+     argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None
+ ) -> None:
+@@ -997,6 +1053,7 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+ 
+     show_config: bool = arguments.pop("show_config", False)
+     show_files: bool = arguments.pop("show_files", False)
++    show_path_decision_target: str | None = arguments.pop("show_path_decision", None)
+     if show_config and show_files:
+         sys.exit("Error: either specify show-config or show-files not both.")
+ 
+@@ -1014,7 +1071,7 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+             warn(f"virtual_env dir does not exist: {arguments['virtual_env']}", stacklevel=2)
+ 
+     file_names = arguments.pop("files", [])
+-    if not file_names and not show_config:
++    if not file_names and not show_config and not show_path_decision_target:
+         print(QUICK_GUIDE)
+         if arguments:
+             sys.exit("Error: arguments passed in without any paths or content.")
+@@ -1055,6 +1112,9 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+     if show_config:
+         print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
+         return
++    if show_path_decision_target:
++        _show_path_decision(show_path_decision_target, config)
++        return
+     if file_names == ["-"]:
+         file_path = Path(stream_filename) if stream_filename else None
+         if show_files:
+diff --git a/isort/settings.py b/isort/settings.py
+index 9c22fa5a..617849bf 100644
+--- a/isort/settings.py
++++ b/isort/settings.py
+@@ -497,21 +497,20 @@ class Config(_Config):
+ 
+         super().__init__(sources=tuple(sources), **combined_config)
+ 
+-    def is_supported_filetype(self, file_name: str) -> bool:
++    def supported_filetype_reason(self, file_name: str) -> str | None:
+         _root, ext = os.path.splitext(file_name)
+         ext = ext.lstrip(".")
+         if ext in self.supported_extensions:
+-            return True
++            return None
+         if ext in self.blocked_extensions:
+-            return False
++            return f"Extension '.{ext}' is blocked by the current configuration."
+ 
+-        # Skip editor backup files.
+         if file_name.endswith("~"):
+-            return False
++            return "File looks like an editor backup."
+ 
+         try:
+             if stat.S_ISFIFO(os.stat(file_name).st_mode):
+-                return False
++                return "File is a named pipe."
+         except OSError:
+             pass
+ 
+@@ -519,8 +518,13 @@ class Config(_Config):
+             with open(file_name, "rb") as fp:
+                 line = fp.readline(100)
+         except OSError:
+-            return False
+-        return bool(_SHEBANG_RE.match(line))
++            return "File could not be opened to inspect its type."
++        if _SHEBANG_RE.match(line):
++            return None
++        return "File extension is not supported and no Python shebang was found."
++
++    def is_supported_filetype(self, file_name: str) -> bool:
++        return self.supported_filetype_reason(file_name) is None
+ 
+     def _check_folder_git_ls_files(self, folder: str) -> Path | None:
+         env = {**os.environ, "LANG": "C.UTF-8"}
+@@ -559,8 +563,8 @@ class Config(_Config):
+         }
+         return git_folder
+ 
+-    def is_skipped(self, file_path: Path) -> bool:
+-        """Returns True if the file and/or folder should be skipped based on current settings."""
++    def skipped_reason(self, file_path: Path) -> str | None:
++        """Returns the reason a file and/or folder should be skipped based on current settings."""
+         if self.directory and Path(self.directory) in file_path.resolve().parents:
+             file_name = os.path.relpath(file_path.resolve(), self.directory)
+         else:
+@@ -576,24 +580,24 @@ class Config(_Config):
+             if posixpath.abspath(normalized_path) == posixpath.abspath(
+                 skip_path.replace("\\", "/")
+             ):
+-                return True
++                return f"Matched skip entry '{skip_path}'."
+ 
+         position = os.path.split(file_name)
+         while position[1]:
+             if position[1] in self.skips:
+-                return True
++                return f"Matched skip entry '{position[1]}'."
+             position = os.path.split(position[0])
+ 
+         for sglob in self.skip_globs:
+             if fnmatch.fnmatch(file_name, sglob) or fnmatch.fnmatch("/" + file_name, sglob):
+-                return True
++                return f"Matched skip_glob pattern '{sglob}'."
+ 
+         if not (os.path.isfile(os_path) or os.path.isdir(os_path) or os.path.islink(os_path)):
+-            return True
++            return "Path does not exist."
+ 
+         if self.skip_gitignore:
+             if file_path.name == ".git":  # pragma: no cover
+-                return True
++                return "Path points at the .git directory while skip_gitignore is enabled."
+ 
+             git_folder = None
+ 
+@@ -605,16 +609,17 @@ class Config(_Config):
+             else:
+                 git_folder = self._check_folder_git_ls_files(str(file_path.parent))
+ 
+-            # git_ls_files are good files you should parse. If you're not in the allow list, skip.
+-
+             if (
+                 git_folder
+                 and not file_path.is_dir()
+                 and str(file_path.resolve()) not in self.git_ls_files[git_folder]
+             ):
+-                return True
++                return f"Path is ignored by git in repository '{git_folder}'."
+ 
+-        return False
++        return None
++
++    def is_skipped(self, file_path: Path) -> bool:
++        return self.skipped_reason(file_path) is not None
+ 
+     @property
+     def known_patterns(self) -> list[tuple[Pattern[str], str]]:
+diff --git a/tests/unit/test_main.py b/tests/unit/test_main.py
+index 79421169..26539287 100644
+--- a/tests/unit/test_main.py
++++ b/tests/unit/test_main.py
+@@ -86,6 +86,7 @@ def test_parse_args():
+     assert main.parse_args(["--overwrite-in-place"]) == {"overwrite_in_place": True}
+     assert main.parse_args(["--from-first"]) == {"from_first": True}
+     assert main.parse_args(["--resolve-all-configs"]) == {"resolve_all_configs": True}
++    assert main.parse_args(["--show-path-decision", "os"]) == {"show_path_decision": "os"}
+ 
+ 
+ def test_ascii_art(capsys):
+@@ -137,6 +138,39 @@ def test_show_files(capsys, tmpdir):
+         main.main([str(tmpdir), "--show-files", "--show-config"])
+ 
+ 
++def test_show_path_decision(capsys, tmpdir):
++    skipped = tmpdir.join("skipped.py")
++    skipped.write("import os\n")
++
++    main.main(["--show-path-decision", "os"])
++    out, error = capsys.readouterr()
++    assert out == (
++        "module: os\n"
++        "section: STDLIB\n"
++        "reason: Matched configured known pattern re.compile('^os$')\n"
++    )
++    assert not error
++
++    main.main(["--show-path-decision", str(skipped), "--skip", str(skipped)])
++    out, error = capsys.readouterr()
++    assert out == (
++        f"path: {os.path.abspath(str(skipped))}\n"
++        "decision: skipped\n"
++        f"reason: Matched skip entry '{str(skipped)}'.\n"
++    )
++    assert not error
++
++    skipped.write("# isort: skip_file\nimport os\n")
++    main.main(["--show-path-decision", str(skipped)])
++    out, error = capsys.readouterr()
++    assert out == (
++        f"path: {os.path.abspath(str(skipped))}\n"
++        "decision: skipped\n"
++        f"reason: {str(skipped)} contains a file skip comment and was skipped.\n"
++    )
++    assert not error
++
++
+ def test_missing_default_section(tmpdir):
+     config_file = tmpdir.join(".isort.cfg")
+     config_file.write(
+diff --git a/tests/unit/test_settings.py b/tests/unit/test_settings.py
+index 2aacfc20..d3658e83 100644
+--- a/tests/unit/test_settings.py
++++ b/tests/unit/test_settings.py
+@@ -45,6 +45,13 @@ class TestConfig:
+         assert Config().is_skipped(Path("C:\\path\\isort.py"))
+         assert Config(skip=["/path/isort.py"]).is_skipped(Path("C:\\path\\isort.py"))
+ 
++    def test_skipped_reason(self):
++        config = Config(skip=["project"], skip_glob=["*.generated.py"])
++        assert config.skipped_reason(Path("project/example.py")) == "Matched skip entry 'project'."
++        assert config.skipped_reason(Path("example.generated.py")) == (
++            "Matched skip_glob pattern '*.generated.py'."
++        )
++
+     def test_is_supported_filetype(self):
+         assert self.instance.is_supported_filetype("file.py")
+         assert self.instance.is_supported_filetype("file.pyi")
+@@ -54,6 +61,12 @@ class TestConfig:
+         assert not self.instance.is_supported_filetype("file.txt")
+         assert not self.instance.is_supported_filetype("file.pex")
+ 
++    def test_supported_filetype_reason(self):
++        assert self.instance.supported_filetype_reason("file.py") is None
++        assert self.instance.supported_filetype_reason("file.pex") == (
++            "Extension '.pex' is blocked by the current configuration."
++        )
++
+     def test_is_supported_filetype_ioerror(self, tmpdir):
+         does_not_exist = tmpdir.join("fake.txt")
+         assert not self.instance.is_supported_filetype(str(does_not_exist))

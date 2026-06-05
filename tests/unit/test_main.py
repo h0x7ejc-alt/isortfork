@@ -86,6 +86,7 @@ def test_parse_args():
     assert main.parse_args(["--overwrite-in-place"]) == {"overwrite_in_place": True}
     assert main.parse_args(["--from-first"]) == {"from_first": True}
     assert main.parse_args(["--resolve-all-configs"]) == {"resolve_all_configs": True}
+    assert main.parse_args(["--show-path-decision", "os"]) == {"show_path_decision": "os"}
 
 
 def test_ascii_art(capsys):
@@ -135,6 +136,39 @@ def test_show_files(capsys, tmpdir):
     # can not be used with show-config
     with pytest.raises(SystemExit):
         main.main([str(tmpdir), "--show-files", "--show-config"])
+
+
+def test_show_path_decision(capsys, tmpdir):
+    skipped = tmpdir.join("skipped.py")
+    skipped.write("import os\n")
+
+    main.main(["--show-path-decision", "os"])
+    out, error = capsys.readouterr()
+    assert out == (
+        "module: os\n"
+        "section: STDLIB\n"
+        "reason: Matched configured known pattern re.compile('^os$')\n"
+    )
+    assert not error
+
+    main.main(["--show-path-decision", str(skipped), "--skip", str(skipped)])
+    out, error = capsys.readouterr()
+    assert out == (
+        f"path: {os.path.abspath(str(skipped))}\n"
+        "decision: skipped\n"
+        f"reason: Matched skip entry '{str(skipped)}'.\n"
+    )
+    assert not error
+
+    skipped.write("# isort: skip_file\nimport os\n")
+    main.main(["--show-path-decision", str(skipped)])
+    out, error = capsys.readouterr()
+    assert out == (
+        f"path: {os.path.abspath(str(skipped))}\n"
+        "decision: skipped\n"
+        f"reason: {str(skipped)} contains a file skip comment and was skipped.\n"
+    )
+    assert not error
 
 
 def test_missing_default_section(tmpdir):

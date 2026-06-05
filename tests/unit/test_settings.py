@@ -45,6 +45,13 @@ class TestConfig:
         assert Config().is_skipped(Path("C:\\path\\isort.py"))
         assert Config(skip=["/path/isort.py"]).is_skipped(Path("C:\\path\\isort.py"))
 
+    def test_skipped_reason(self):
+        config = Config(skip=["project"], skip_glob=["*.generated.py"])
+        assert config.skipped_reason(Path("project/example.py")) == "Matched skip entry 'project'."
+        assert config.skipped_reason(Path("example.generated.py")) == (
+            "Matched skip_glob pattern '*.generated.py'."
+        )
+
     def test_is_supported_filetype(self):
         assert self.instance.is_supported_filetype("file.py")
         assert self.instance.is_supported_filetype("file.pyi")
@@ -53,6 +60,12 @@ class TestConfig:
         assert not self.instance.is_supported_filetype("file.pyc")
         assert not self.instance.is_supported_filetype("file.txt")
         assert not self.instance.is_supported_filetype("file.pex")
+
+    def test_supported_filetype_reason(self):
+        assert self.instance.supported_filetype_reason("file.py") is None
+        assert self.instance.supported_filetype_reason("file.pex") == (
+            "Extension '.pex' is blocked by the current configuration."
+        )
 
     def test_is_supported_filetype_ioerror(self, tmpdir):
         does_not_exist = tmpdir.join("fake.txt")

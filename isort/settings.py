@@ -497,21 +497,20 @@ class Config(_Config):
 
         super().__init__(sources=tuple(sources), **combined_config)
 
-    def is_supported_filetype(self, file_name: str) -> bool:
+    def supported_filetype_reason(self, file_name: str) -> str | None:
         _root, ext = os.path.splitext(file_name)
         ext = ext.lstrip(".")
         if ext in self.supported_extensions:
-            return True
+            return None
         if ext in self.blocked_extensions:
-            return False
+            return f"Extension '.{ext}' is blocked by the current configuration."
 
-        # Skip editor backup files.
         if file_name.endswith("~"):
-            return False
+            return "File looks like an editor backup."
 
         try:
             if stat.S_ISFIFO(os.stat(file_name).st_mode):
-                return False
+                return "File is a named pipe."
         except OSError:
             pass
 
@@ -519,8 +518,13 @@ class Config(_Config):
             with open(file_name, "rb") as fp:
                 line = fp.readline(100)
         except OSError:
-            return False
-        return bool(_SHEBANG_RE.match(line))
+            return "File could not be opened to inspect its type."
+        if _SHEBANG_RE.match(line):
+            return None
+        return "File extension is not supported and no Python shebang was found."
+
+    def is_supported_filetype(self, file_name: str) -> bool:
+        return self.supported_filetype_reason(file_name) is None
 
     def _check_folder_git_ls_files(self, folder: str) -> Path | None:
         env = {**os.environ, "LANG": "C.UTF-8"}
@@ -559,8 +563,8 @@ class Config(_Config):
         }
         return git_folder
 
-    def is_skipped(self, file_path: Path) -> bool:
-        """Returns True if the file and/or folder should be skipped based on current settings."""
+    def skipped_reason(self, file_path: Path) -> str | None:
+        """Returns the reason a file and/or folder should be skipped based on current settings."""
         if self.directory and Path(self.directory) in file_path.resolve().parents:
             file_name = os.path.relpath(file_path.resolve(), self.directory)
         else:
@@ -576,24 +580,24 @@ class Config(_Config):
             if posixpath.abspath(normalized_path) == posixpath.abspath(
                 skip_path.replace("\\", "/")
             ):
-                return True
+                return f"Matched skip entry '{skip_path}'."
 
         position = os.path.split(file_name)
         while position[1]:
             if position[1] in self.skips:
-                return True
+                return f"Matched skip entry '{position[1]}'."
             position = os.path.split(position[0])
 
         for sglob in self.skip_globs:
             if fnmatch.fnmatch(file_name, sglob) or fnmatch.fnmatch("/" + file_name, sglob):
-                return True
+                return f"Matched skip_glob pattern '{sglob}'."
 
         if not (os.path.isfile(os_path) or os.path.isdir(os_path) or os.path.islink(os_path)):
-            return True
+            return "Path does not exist."
 
         if self.skip_gitignore:
             if file_path.name == ".git":  # pragma: no cover
-                return True
+                return "Path points at the .git directory while skip_gitignore is enabled."
 
             git_folder = None
 
@@ -605,16 +609,17 @@ class Config(_Config):
             else:
                 git_folder = self._check_folder_git_ls_files(str(file_path.parent))
 
-            # git_ls_files are good files you should parse. If you're not in the allow list, skip.
-
             if (
                 git_folder
                 and not file_path.is_dir()
                 and str(file_path.resolve()) not in self.git_ls_files[git_folder]
             ):
-                return True
+                return f"Path is ignored by git in repository '{git_folder}'."
 
-        return False
+        return None
+
+    def is_skipped(self, file_path: Path) -> bool:
+        return self.skipped_reason(file_path) is not None
 
     @property
     def known_patterns(self) -> list[tuple[Pattern[str], str]]:

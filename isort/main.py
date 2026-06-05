@@ -200,6 +200,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="See the files isort will be run against with the current config options.",
     )
     general_group.add_argument(
+        "--show-path-decision",
+        dest="show_path_decision",
+        help="Show why a path would be skipped, or why a module would be placed in a section.",
+    )
+    general_group.add_argument(
         "--df",
         "--diff",
         dest="show_diff",
@@ -900,6 +905,57 @@ def _preconvert(item: Any) -> str | list[Any]:
     raise TypeError(f"Unserializable object {item} of type {type(item)}")
 
 
+def _looks_like_path_target(target: str, config: Config) -> bool:
+    extension = os.path.splitext(target)[1].lstrip(".")
+    return bool(
+        os.path.isabs(target)
+        or os.path.sep in target
+        or (os.path.altsep and os.path.altsep in target)
+        or Path(target).exists()
+        or Path(target).is_symlink()
+        or target in {".", ".."}
+        or target.endswith("~")
+        or extension in config.supported_extensions
+        or extension in config.blocked_extensions
+    )
+
+
+def _path_decision(target: str, config: Config) -> tuple[str, str]:
+    path = Path(target)
+    supported_reason = None
+    if path.is_file():
+        supported_reason = config.supported_filetype_reason(str(path))
+        if supported_reason is not None:
+            return ("not_discovered", supported_reason)
+
+    skipped_reason = config.skipped_reason(path)
+    if skipped_reason is not None:
+        return ("skipped", skipped_reason)
+
+    if path.is_file():
+        try:
+            api.check_file(path, config=config, disregard_skip=True)
+        except FileSkipped as error:
+            return ("skipped", error.message)
+
+    return ("kept", "Path would be processed with the current settings.")
+
+
+def _show_path_decision(target: str, config: Config) -> None:
+    if _looks_like_path_target(target, config):
+        display_target = os.path.abspath(target)
+        decision, reason = _path_decision(target, config)
+        print(f"path: {display_target}")
+        print(f"decision: {decision}")
+        print(f"reason: {reason}")
+        return
+
+    section, reason = api.place_module_with_reason(target, config=config)
+    print(f"module: {target}")
+    print(f"section: {section}")
+    print(f"reason: {reason}")
+
+
 def identify_imports_main(
     argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None
 ) -> None:
@@ -997,6 +1053,7 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None) 
 
     show_config: bool = arguments.pop("show_config", False)
     show_files: bool = arguments.pop("show_files", False)
+    show_path_decision_target: str | None = arguments.pop("show_path_decision", None)
     if show_config and show_files:
         sys.exit("Error: either specify show-config or show-files not both.")
 
@@ -1014,7 +1071,7 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None) 
             warn(f"virtual_env dir does not exist: {arguments['virtual_env']}", stacklevel=2)
 
     file_names = arguments.pop("files", [])
-    if not file_names and not show_config:
+    if not file_names and not show_config and not show_path_decision_target:
         print(QUICK_GUIDE)
         if arguments:
             sys.exit("Error: arguments passed in without any paths or content.")
@@ -1054,6 +1111,9 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None) 
     config = Config(**config_dict)
     if show_config:
         print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
+        return
+    if show_path_decision_target:
+        _show_path_decision(show_path_decision_target, config)
         return
     if file_names == ["-"]:
         file_path = Path(stream_filename) if stream_filename else None
