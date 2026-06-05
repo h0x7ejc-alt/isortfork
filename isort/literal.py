@@ -113,3 +113,13 @@ def _tuple(value: tuple[Any, ...], printer: ISortPrettyPrinter) -> str:
 @register_type("unique-tuple", tuple)
 def _unique_tuple(value: tuple[Any, ...], printer: ISortPrettyPrinter) -> str:
     return printer.pformat(tuple(sorted(set(value))))
+
+
+@register_type("value-sorted-dict", dict)
+def _value_sorted_dict(value: dict[Any, Any], printer: ISortPrettyPrinter) -> str:
+    seen = {}
+    for key, val in reversed(value.items()):
+        if val not in seen:
+            seen[val] = key
+    sorted_items = sorted(seen.items(), key=lambda item: item[0])
+    return printer.pformat(dict((key, val) for val, key in sorted_items))
