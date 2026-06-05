@@ -90,6 +90,15 @@ def _dict(value: dict[Any, Any], printer: ISortPrettyPrinter) -> str:
     return printer.pformat(dict(sorted(value.items(), key=lambda item: item[1])))
 
 
+@register_type("unique-dict", dict)
+def _unique_dict(value: dict[Any, Any], printer: ISortPrettyPrinter) -> str:
+    sorted_items = sorted(value.items(), key=lambda item: item[1])
+    seen: dict[Any, Any] = {}
+    for k, v in sorted_items:
+        seen[v] = k
+    return printer.pformat({k: v for v, k in seen.items()})
+
+
 @register_type("list", list)
 def _list(value: list[Any], printer: ISortPrettyPrinter) -> str:
     return printer.pformat(sorted(value))

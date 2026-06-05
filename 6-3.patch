@@ -1,0 +1,75 @@
+diff --git a/isort/literal.py b/isort/literal.py
+index 16ddcba0..1cea7e02 100644
+--- a/isort/literal.py
++++ b/isort/literal.py
+@@ -90,6 +90,15 @@ def _dict(value: dict[Any, Any], printer: ISortPrettyPrinter) -> str:
+     return printer.pformat(dict(sorted(value.items(), key=lambda item: item[1])))
+ 
+ 
++@register_type("unique-dict", dict)
++def _unique_dict(value: dict[Any, Any], printer: ISortPrettyPrinter) -> str:
++    sorted_items = sorted(value.items(), key=lambda item: item[1])
++    seen: dict[Any, Any] = {}
++    for k, v in sorted_items:
++        seen[v] = k
++    return printer.pformat({k: v for v, k in seen.items()})
++
++
+ @register_type("list", list)
+ def _list(value: list[Any], printer: ISortPrettyPrinter) -> str:
+     return printer.pformat(sorted(value))
+diff --git a/tests/unit/test_literal.py b/tests/unit/test_literal.py
+index 8fa5761b..32c3405a 100644
+--- a/tests/unit/test_literal.py
++++ b/tests/unit/test_literal.py
+@@ -26,3 +26,50 @@ def test_value_assignment_assignments():
+ def test_assignments_invalid_section():
+     with pytest.raises(exceptions.AssignmentsFormatMismatch):
+         isort.literal.assignment("\n\nx = 1\nx++", "assignments", "py")
++
++
++def test_value_assignment_dict():
++    assert (
++        isort.literal.assignment("x = {'b': 2, 'a': 1}", "dict", "py")
++        == "x = {'a': 1, 'b': 2}"
++    )
++
++
++def test_value_assignment_unique_dict():
++    assert (
++        isort.literal.assignment("x = {'a': 3, 'b': 1, 'c': 2, 'd': 1}", "unique-dict", "py")
++        == "x = {'d': 1, 'c': 2, 'a': 3}"
++    )
++
++
++def test_value_assignment_unique_dict_empty():
++    assert (
++        isort.literal.assignment("x = {}", "unique-dict", "py")
++        == "x = {}"
++    )
++
++
++def test_value_assignment_unique_dict_single():
++    assert (
++        isort.literal.assignment("x = {'a': 1}", "unique-dict", "py")
++        == "x = {'a': 1}"
++    )
++
++
++def test_value_assignment_unique_dict_all_unique():
++    assert (
++        isort.literal.assignment("x = {'b': 2, 'a': 1, 'c': 3}", "unique-dict", "py")
++        == "x = {'a': 1, 'b': 2, 'c': 3}"
++    )
++
++
++def test_value_assignment_unique_dict_duplicate_values():
++    assert (
++        isort.literal.assignment("x = {'a': 1, 'b': 1, 'c': 1}", "unique-dict", "py")
++        == "x = {'c': 1}"
++    )
++
++
++def test_value_mismatch_unique_dict():
++    with pytest.raises(exceptions.LiteralSortTypeMismatch):
++        isort.literal.assignment("x = [1, 2, 3]", "unique-dict", "py")
