@@ -18,7 +18,7 @@ from .exceptions import FileSkipped, ISortError, UnsupportedEncoding
 from .format import create_terminal_printer
 from .logo import ASCII_ART
 from .profiles import profiles
-from .settings import VALID_PY_TARGETS, Config, find_all_configs
+from .settings import RUNTIME_SOURCE, VALID_PY_TARGETS, Config, find_all_configs
 from .utils import Trie
 from .wrap_modes import WrapModes
 
@@ -900,6 +900,24 @@ def _preconvert(item: Any) -> str | list[Any]:
     raise TypeError(f"Unserializable object {item} of type {type(item)}")
 
 
+def _show_config_details(config: Config) -> dict[str, Any]:
+    config_path = None
+    runtime_overrides = False
+
+    for source in config.sources:
+        source_name = source.get("source")
+        if source_name == RUNTIME_SOURCE:
+            runtime_overrides = True
+        elif source_name != "defaults" and not str(source_name).endswith(" profile"):
+            config_path = str(source_name)
+
+    return {
+        "path": config_path,
+        "profile": config.profile or None,
+        "runtime_overrides": runtime_overrides,
+    }
+
+
 def identify_imports_main(
     argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None
 ) -> None:
@@ -1053,7 +1071,8 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None) 
 
     config = Config(**config_dict)
     if show_config:
-        print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
+        config_payload = {**config.__dict__, "config_info": _show_config_details(config)}
+        print(json.dumps(config_payload, indent=4, separators=(",", ": "), default=_preconvert))
         return
     if file_names == ["-"]:
         file_path = Path(stream_filename) if stream_filename else None

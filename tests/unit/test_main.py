@@ -187,6 +187,11 @@ def test_main(capsys, tmpdir):
     returned_config = json.loads(out)
     assert returned_config
     assert returned_config["virtual_env"] == str(tmpdir)
+    assert returned_config["config_info"] == {
+        "path": None,
+        "profile": None,
+        "runtime_overrides": True,
+    }
 
     # This should work even if settings path is not provided
     main.main([*base_args[2:], "--show-config"])
@@ -214,6 +219,16 @@ verbose=true
 """
     )
     config_args = ["--settings-path", str(config_file)]
+    main.main([*config_args, "--show-config"])
+    out, error = capsys.readouterr()
+    returned_config = json.loads(out)
+    assert returned_config["profile"] == "hug"
+    assert returned_config["config_info"] == {
+        "path": str(config_file),
+        "profile": "hug",
+        "runtime_overrides": False,
+    }
+
     main.main(
         [
             *config_args,
@@ -223,7 +238,11 @@ verbose=true
         ]
     )
     out, error = capsys.readouterr()
-    assert json.loads(out)["profile"] == "hug"
+    assert json.loads(out)["config_info"] == {
+        "path": str(config_file),
+        "profile": "hug",
+        "runtime_overrides": True,
+    }
 
     # Should be able to stream in content to sort
     input_content = TextIOWrapper(

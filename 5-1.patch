@@ -1,0 +1,94 @@
+diff --git a/isort/main.py b/isort/main.py
+index 72d95b97..3d1cf27a 100644
+--- a/isort/main.py
++++ b/isort/main.py
+@@ -18,7 +18,7 @@ from .exceptions import FileSkipped, ISortError, UnsupportedEncoding
+ from .format import create_terminal_printer
+ from .logo import ASCII_ART
+ from .profiles import profiles
+-from .settings import VALID_PY_TARGETS, Config, find_all_configs
++from .settings import RUNTIME_SOURCE, VALID_PY_TARGETS, Config, find_all_configs
+ from .utils import Trie
+ from .wrap_modes import WrapModes
+ 
+@@ -900,6 +900,24 @@ def _preconvert(item: Any) -> str | list[Any]:
+     raise TypeError(f"Unserializable object {item} of type {type(item)}")
+ 
+ 
++def _show_config_details(config: Config) -> dict[str, Any]:
++    config_path = None
++    runtime_overrides = False
++
++    for source in config.sources:
++        source_name = source.get("source")
++        if source_name == RUNTIME_SOURCE:
++            runtime_overrides = True
++        elif source_name != "defaults" and not str(source_name).endswith(" profile"):
++            config_path = str(source_name)
++
++    return {
++        "path": config_path,
++        "profile": config.profile or None,
++        "runtime_overrides": runtime_overrides,
++    }
++
++
+ def identify_imports_main(
+     argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None
+ ) -> None:
+@@ -1053,7 +1071,8 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+ 
+     config = Config(**config_dict)
+     if show_config:
+-        print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
++        config_payload = {**config.__dict__, "config_info": _show_config_details(config)}
++        print(json.dumps(config_payload, indent=4, separators=(",", ": "), default=_preconvert))
+         return
+     if file_names == ["-"]:
+         file_path = Path(stream_filename) if stream_filename else None
+diff --git a/tests/unit/test_main.py b/tests/unit/test_main.py
+index 79421169..6623cf25 100644
+--- a/tests/unit/test_main.py
++++ b/tests/unit/test_main.py
+@@ -187,6 +187,11 @@ def test_main(capsys, tmpdir):
+     returned_config = json.loads(out)
+     assert returned_config
+     assert returned_config["virtual_env"] == str(tmpdir)
++    assert returned_config["config_info"] == {
++        "path": None,
++        "profile": None,
++        "runtime_overrides": True,
++    }
+ 
+     # This should work even if settings path is not provided
+     main.main([*base_args[2:], "--show-config"])
+@@ -214,6 +219,16 @@ verbose=true
+ """
+     )
+     config_args = ["--settings-path", str(config_file)]
++    main.main([*config_args, "--show-config"])
++    out, error = capsys.readouterr()
++    returned_config = json.loads(out)
++    assert returned_config["profile"] == "hug"
++    assert returned_config["config_info"] == {
++        "path": str(config_file),
++        "profile": "hug",
++        "runtime_overrides": False,
++    }
++
+     main.main(
+         [
+             *config_args,
+@@ -223,7 +238,11 @@ verbose=true
+         ]
+     )
+     out, error = capsys.readouterr()
+-    assert json.loads(out)["profile"] == "hug"
++    assert json.loads(out)["config_info"] == {
++        "path": str(config_file),
++        "profile": "hug",
++        "runtime_overrides": True,
++    }
+ 
+     # Should be able to stream in content to sort
+     input_content = TextIOWrapper(
