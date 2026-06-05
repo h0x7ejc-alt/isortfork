@@ -1,0 +1,101 @@
+diff --git a/isort/literal.py b/isort/literal.py
+index 16ddcba0..d070bb7f 100644
+--- a/isort/literal.py
++++ b/isort/literal.py
+@@ -100,6 +100,18 @@ def _unique_list(value: list[Any], printer: ISortPrettyPrinter) -> str:
+     return printer.pformat(sorted(set(value)))
+ 
+ 
++@register_type("unique-dict", dict)
++def _unique_dict(value: dict[Any, Any], printer: ISortPrettyPrinter) -> str:
++    seen_values: list[Any] = []
++    unique_items: list[tuple[Any, Any]] = []
++    for k, v in reversed(list(value.items())):
++        if v not in seen_values:
++            seen_values.append(v)
++            unique_items.append((k, v))
++    unique_items.reverse()
++    return printer.pformat(dict(sorted(unique_items, key=lambda item: item[1])))
++
++
+ @register_type("set", set)
+ def _set(value: set[Any], printer: ISortPrettyPrinter) -> str:
+     return "{" + printer.pformat(tuple(sorted(value)))[1:-1] + "}"
+diff --git a/test_literal_dict.py b/test_literal_dict.py
+new file mode 100644
+index 00000000..58127135
+--- /dev/null
++++ b/test_literal_dict.py
+@@ -0,0 +1,4 @@
++import isort.literal
++from isort.settings import Config
++
++print(isort.literal.assignment('y = {"z": "a", "b": "c"}', "dict", "py"))
+diff --git a/tests/integration/test_ticketed_features.py b/tests/integration/test_ticketed_features.py
+index a8dab50a..0fcd8096 100644
+--- a/tests/integration/test_ticketed_features.py
++++ b/tests/integration/test_ticketed_features.py
+@@ -50,7 +50,10 @@
+ 
+ 
+ # # isort: dict
+-# y = {"z": "z", "b": "b", "b": "c"}"""
++# y = {"z": "z", "b": "b", "b": "c"}
++
++# # isort: unique-dict
++# z = {"a": "c", "b": "c", "c": "z"}"""
+ #         )
+ #         == """
+ # import a
+@@ -78,7 +81,10 @@
+ 
+ 
+ # # isort: dict
+-# y = {'b': 'c', 'z': 'z'}"""
++# y = {'b': 'c', 'z': 'z'}
++
++# # isort: unique-dict
++# z = {'b': 'c', 'c': 'z'}"""
+ #     )
+ #     assert (
+ #         isort.code(
+@@ -114,7 +120,10 @@
+ # a = 3
+ 
+ # # isort: dict
+-# y = {"z": "z", "b": "b", "b": "c"}""",
++# y = {"z": "z", "b": "b", "b": "c"}
++
++# # isort: unique-dict
++# z = {"a": "c", "b": "c", "c": "z"}""",
+ #             formatter="example",
+ #         )
+ #         == """
+@@ -148,7 +157,10 @@
+ # d = 1
+ 
+ # # isort: dict
+-# y = {"b": "c", "z": "z"}"""
++# y = {"b": "c", "z": "z"}
++
++# # isort: unique-dict
++# z = {"b": "c", "c": "z"}"""
+ #     )
+ #     assert api.sort_stream(
+ #         input_stream=StringIO(
+diff --git a/tests/unit/test_literal.py b/tests/unit/test_literal.py
+index 8fa5761b..302f3e54 100644
+--- a/tests/unit/test_literal.py
++++ b/tests/unit/test_literal.py
+@@ -26,3 +26,11 @@ def test_value_assignment_assignments():
+ def test_assignments_invalid_section():
+     with pytest.raises(exceptions.AssignmentsFormatMismatch):
+         isort.literal.assignment("\n\nx = 1\nx++", "assignments", "py")
++
++
++def test_unique_dict():
++    # Regular dict sorts by value but doesn't deduplicate by value (dict keys are inherently unique)
++    # unique-dict should deduplicate by value and keep the last corresponding key-value pair
++    assert isort.literal.assignment('y = {"a": "c", "b": "c", "c": "z"}', "unique-dict", "py") == "y = {'b': 'c', 'c': 'z'}"
++    assert isort.literal.assignment('y = {"a": 2, "b": 1, "c": 2}', "unique-dict", "py") == "y = {'b': 1, 'c': 2}"
++    assert isort.literal.assignment('y = {"z": 3, "a": 1, "b": 1, "c": 2, "d": 2}', "unique-dict", "py") == "y = {'b': 1, 'd': 2, 'z': 3}"
