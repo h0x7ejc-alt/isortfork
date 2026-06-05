@@ -1,0 +1,31 @@
+diff --git a/isort/main.py b/isort/main.py
+index 72d95b97..64880551 100644
+--- a/isort/main.py
++++ b/isort/main.py
+@@ -1053,7 +1053,25 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+ 
+     config = Config(**config_dict)
+     if show_config:
+-        print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
++        config_data = config.__dict__.copy()
++
++        config_path = None
++        is_runtime_overridden = False
++
++        for source in getattr(config, "sources", ()):
++            src_name = source.get("source", "")
++            if src_name == "runtime":
++                is_runtime_overridden = True
++            elif src_name and src_name != "defaults" and not src_name.endswith(" profile"):
++                config_path = src_name
++
++        config_data["parsed_config_source"] = {
++            "path": config_path,
++            "profile": config.profile,
++            "is_runtime_overridden": is_runtime_overridden,
++        }
++
++        print(json.dumps(config_data, indent=4, separators=(",", ": "), default=_preconvert))
+         return
+     if file_names == ["-"]:
+         file_path = Path(stream_filename) if stream_filename else None
