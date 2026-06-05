@@ -12,6 +12,7 @@ from ._parse_utils import (
     import_type,
     normalize_from_import_string,
     normalize_line,
+    parse_import_nodes,
     skip_line,
     strip_syntax,
 )
@@ -249,28 +250,19 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
                     out_lines.extend(raw_lines)
                     continue
 
-            just_imports = [
-                item.replace("{|", "{ ").replace("|}", " }")
-                for item in strip_syntax(import_string).split()
-            ]
+            parsed = parse_import_nodes(import_string, type_of_import)
+            just_imports = parsed.just_imports
+            direct_imports = parsed.direct_imports
 
             attach_comments_to: list[str] | None = None
-            direct_imports = just_imports[1:]
-            straight_import = True
-            top_level_module = ""
-            if "as" in just_imports and (just_imports.index("as") + 1) < len(just_imports):
+            straight_import = type_of_import != "from"
+            top_level_module = parsed.import_from or ""
+
+            if parsed.aliases:
                 straight_import = False
-                while "as" in just_imports:
-                    nested_module = None
-                    as_index = just_imports.index("as")
+                for nested_module, as_name in parsed.aliases:
                     if type_of_import == "from":
-                        nested_module = just_imports[as_index - 1]
-                        top_level_module = just_imports[0]
                         module = top_level_module + "." + nested_module
-                        as_name = just_imports[as_index + 1]
-                        direct_imports.remove(nested_module)
-                        direct_imports.remove(as_name)
-                        direct_imports.remove("as")
                         if nested_module == as_name and config.remove_redundant_aliases:
                             pass
                         elif as_name not in as_map["from"][module]:  # pragma: no branch
@@ -285,15 +277,14 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
                             if associated_comment in comments:  # pragma: no branch
                                 comments.pop(comments.index(associated_comment))
                     else:
-                        module = just_imports[as_index - 1]
-                        as_name = just_imports[as_index + 1]
+                        module = nested_module
                         if module == as_name and config.remove_redundant_aliases:
                             pass
                         elif as_name not in as_map["straight"][module]:
                             as_map["straight"][module].append(as_name)
 
                     if comments and attach_comments_to is None:
-                        if nested_module and config.combine_as_imports:
+                        if type_of_import == "from" and config.combine_as_imports:
                             attach_comments_to = categorized_comments["from"].setdefault(
                                 f"{top_level_module}.__combined_as__", []
                             )
@@ -308,10 +299,9 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
                                 attach_comments_to = categorized_comments["straight"].setdefault(
                                     f"{module} as {as_name}", []
                                 )
-                    del just_imports[as_index : as_index + 2]
 
             if type_of_import == "from":
-                import_from = just_imports.pop(0)
+                import_from = top_level_module
                 placed_module = finder(import_from)
                 if config.verbose and not config.only_modified:
                     print(f"from-type place_module for {import_from} returned {placed_module}")

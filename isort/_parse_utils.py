@@ -183,3 +183,52 @@ def import_type(
     if line.startswith("lazy from "):
         return "lazy_from"
     return None
+
+
+class ParsedImportNodes(NamedTuple):
+    import_from: str | None
+    just_imports: list[str]
+    direct_imports: list[str]
+    aliases: list[tuple[str, str]]
+
+
+def parse_import_nodes(import_string: str, type_of_import: str) -> ParsedImportNodes:
+    """Parses an import string into its component nodes."""
+    just_imports = [
+        item.replace("{|", "{ ").replace("|}", " }")
+        for item in strip_syntax(import_string).split()
+    ]
+
+    direct_imports = just_imports[1:] if type_of_import == "from" else list(just_imports)
+    aliases = []
+    import_from = just_imports[0] if type_of_import == "from" and just_imports else None
+
+    if "as" in just_imports and (just_imports.index("as") + 1) < len(just_imports):
+        while "as" in just_imports:
+            as_index = just_imports.index("as")
+            if type_of_import == "from":
+                nested_module = just_imports[as_index - 1]
+                as_name = just_imports[as_index + 1]
+                direct_imports.remove(nested_module)
+                direct_imports.remove(as_name)
+                direct_imports.remove("as")
+                aliases.append((nested_module, as_name))
+                del just_imports[as_index : as_index + 2]
+            else:
+                module = just_imports[as_index - 1]
+                as_name = just_imports[as_index + 1]
+                direct_imports.remove(module)
+                direct_imports.remove(as_name)
+                direct_imports.remove("as")
+                aliases.append((module, as_name))
+                del just_imports[as_index : as_index + 2]
+
+    if type_of_import == "from" and just_imports:
+        just_imports.pop(0)
+
+    return ParsedImportNodes(
+        import_from=import_from,
+        just_imports=just_imports,
+        direct_imports=direct_imports,
+        aliases=aliases,
+    )

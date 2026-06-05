@@ -12,6 +12,7 @@ from ._parse_utils import (
     import_type,
     normalize_from_import_string,
     normalize_line,
+    parse_import_nodes,
     skip_line,
     strip_syntax,
 )
@@ -120,47 +121,22 @@ def imports(
 
             identified_import = partial(identified_import, cimport=cimports)
 
-            just_imports = [
-                item.replace("{|", "{ ").replace("|}", " }")
-                for item in strip_syntax(import_string).split()
-            ]
-
-            direct_imports = just_imports[1:]
-            top_level_module = ""
-            if "as" in just_imports and (just_imports.index("as") + 1) < len(just_imports):
-                while "as" in just_imports:
-                    attribute = None
-                    as_index = just_imports.index("as")
-                    if type_of_import == "from":
-                        attribute = just_imports[as_index - 1]
-                        top_level_module = just_imports[0]
-                        module = top_level_module + "." + attribute
-                        alias = just_imports[as_index + 1]
-                        direct_imports.remove(attribute)
-                        direct_imports.remove(alias)
-                        direct_imports.remove("as")
-                        just_imports[1:] = direct_imports
-                        if attribute == alias and config.remove_redundant_aliases:
-                            yield identified_import(top_level_module, attribute)
-                        else:
-                            yield identified_import(top_level_module, attribute, alias=alias)
-
+            parsed = parse_import_nodes(import_string, type_of_import)
+            
+            if type_of_import == "from":
+                top_level_module = parsed.import_from or ""
+                for attribute, alias in parsed.aliases:
+                    if attribute == alias and config.remove_redundant_aliases:
+                        yield identified_import(top_level_module, attribute)
                     else:
-                        module = just_imports[as_index - 1]
-                        alias = just_imports[as_index + 1]
-                        just_imports.remove(alias)
-                        just_imports.remove("as")
-                        just_imports.remove(module)
-                        if module == alias and config.remove_redundant_aliases:
-                            yield identified_import(module)
-                        else:
-                            yield identified_import(module, alias=alias)
-
-            if just_imports:
-                if type_of_import == "from":
-                    module = just_imports.pop(0)
-                    for attribute in just_imports:
-                        yield identified_import(module, attribute)
-                else:
-                    for module in just_imports:
+                        yield identified_import(top_level_module, attribute, alias=alias)
+                for attribute in parsed.direct_imports:
+                    yield identified_import(top_level_module, attribute)
+            else:
+                for module, alias in parsed.aliases:
+                    if module == alias and config.remove_redundant_aliases:
                         yield identified_import(module)
+                    else:
+                        yield identified_import(module, alias=alias)
+                for module in parsed.direct_imports:
+                    yield identified_import(module)
