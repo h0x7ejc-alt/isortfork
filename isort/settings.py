@@ -311,7 +311,46 @@ class Config(_Config):
         quiet = config_overrides.get("quiet", False)
 
         sources: list[dict[str, Any]] = [_DEFAULT_SETTINGS]
+        config_settings: dict[str, Any]
+        project_root: str
+        config_settings, project_root = self._load_config_sources(
+            settings_file, settings_path, quiet, sources
+        )
 
+        profile: dict[str, Any] = {}
+        profile_name = config_overrides.get("profile", config_settings.get("profile", ""))
+        self._apply_profile(profile_name, quiet, sources, profile)
+
+        if config_settings:
+            sources.append(config_settings)
+        if config_overrides:
+            config_overrides["source"] = RUNTIME_SOURCE
+            sources.append(config_overrides)
+
+        known_other: dict[str, frozenset[str]] = {}
+        import_headings: dict[str, str] = {}
+        import_footers: dict[str, str] = {}
+        combined_config = self._process_combined_config(
+            config_settings, config_overrides, project_root, profile, known_other, import_headings, import_footers, quiet
+        )
+
+        self._expand_src_paths(combined_config, project_root)
+
+        self._load_formatter(combined_config)
+
+        self._cleanup_combined_config(combined_config, known_other, import_headings, import_footers)
+
+        self._validate_unsupported_config(combined_config, sources)
+
+        super().__init__(sources=tuple(sources), **combined_config)
+
+    def _load_config_sources(
+        self,
+        settings_file: str,
+        settings_path: str,
+        quiet: bool,
+        sources: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], str]:
         config_settings: dict[str, Any]
         project_root: str
         if settings_file:
@@ -338,9 +377,15 @@ class Config(_Config):
         else:
             config_settings = {}
             project_root = os.getcwd()
+        return config_settings, project_root
 
-        profile_name = config_overrides.get("profile", config_settings.get("profile", ""))
-        profile: dict[str, Any] = {}
+    def _apply_profile(
+        self,
+        profile_name: str,
+        quiet: bool,
+        sources: list[dict[str, Any]],
+        profile: dict[str, Any],
+    ) -> None:
         if profile_name:
             if profile_name not in profiles:
                 for plugin in entry_points(group="isort.profiles"):
@@ -349,16 +394,21 @@ class Config(_Config):
             if profile_name not in profiles:
                 raise ProfileDoesNotExist(profile_name)
 
-            profile = profiles[profile_name].copy()
+            profile.update(profiles[profile_name].copy())
             profile["source"] = f"{profile_name} profile"
             sources.append(profile)
 
-        if config_settings:
-            sources.append(config_settings)
-        if config_overrides:
-            config_overrides["source"] = RUNTIME_SOURCE
-            sources.append(config_overrides)
-
+    def _process_combined_config(
+        self,
+        config_settings: dict[str, Any],
+        config_overrides: dict[str, Any],
+        project_root: str,
+        profile: dict[str, Any],
+        known_other: dict[str, frozenset[str]],
+        import_headings: dict[str, str],
+        import_footers: dict[str, str],
+        quiet: bool,
+    ) -> dict[str, Any]:
         combined_config = {**profile, **config_settings, **config_overrides}
         if "indent" in combined_config:
             indent = str(combined_config["indent"])
@@ -370,9 +420,6 @@ class Config(_Config):
                     indent = "\t"
             combined_config["indent"] = indent
 
-        known_other = {}
-        import_headings = {}
-        import_footers = {}
         for key, value in tuple(combined_config.items()):
             # Collect all known sections beyond those that have direct entries
             if key.startswith(KNOWN_PREFIX) and key not in (
@@ -440,7 +487,13 @@ class Config(_Config):
                 if config_settings.get("source", None)
                 else os.getcwd()
             )
+        return combined_config
 
+    def _expand_src_paths(
+        self,
+        combined_config: dict[str, Any],
+        project_root: str,
+    ) -> None:
         path_root = Path(combined_config.get("directory", project_root)).resolve()
         path_root = path_root if path_root.is_dir() else path_root.parent
         if "src_paths" not in combined_config:
@@ -457,6 +510,10 @@ class Config(_Config):
 
             combined_config["src_paths"] = tuple(src_paths)
 
+    def _load_formatter(
+        self,
+        combined_config: dict[str, Any],
+    ) -> None:
         if "formatter" in combined_config:
             for plugin in entry_points(group="isort.formatters"):
                 if plugin.name == combined_config["formatter"]:
@@ -465,6 +522,13 @@ class Config(_Config):
             else:
                 raise FormattingPluginDoesNotExist(combined_config["formatter"])
 
+    def _cleanup_combined_config(
+        self,
+        combined_config: dict[str, Any],
+        known_other: dict[str, frozenset[str]],
+        import_headings: dict[str, str],
+        import_footers: dict[str, str],
+    ) -> None:
         # Remove any config values that are used for creating config object but
         # aren't defined in dataclass
         combined_config.pop("source", None)
@@ -482,6 +546,11 @@ class Config(_Config):
                 combined_config.pop(f"{IMPORT_FOOTER_PREFIX}{import_footer_key}")
             combined_config["import_footers"] = import_footers
 
+    def _validate_unsupported_config(
+        self,
+        combined_config: dict[str, Any],
+        sources: list[dict[str, Any]],
+    ) -> None:
         unsupported_config_errors = {}
         for option in set(combined_config.keys()).difference(
             getattr(_Config, "__dataclass_fields__", {}).keys()
@@ -494,8 +563,6 @@ class Config(_Config):
                     }
         if unsupported_config_errors:
             raise UnsupportedSettings(unsupported_config_errors)
-
-        super().__init__(sources=tuple(sources), **combined_config)
 
     def is_supported_filetype(self, file_name: str) -> bool:
         _root, ext = os.path.splitext(file_name)
