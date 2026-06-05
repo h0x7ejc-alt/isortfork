@@ -14,6 +14,9 @@ from ._parse_utils import (
     normalize_line,
     skip_line,
     strip_syntax,
+    parse_import_parts,
+    prepare_just_imports,
+    detect_cimport,
 )
 from .comments import parse as parse_comments
 from .settings import DEFAULT_CONFIG, Config
@@ -116,51 +119,9 @@ def imports(
             if type_of_import == "from":
                 import_string = normalize_from_import_string(import_string)
 
-            cimports: bool = " cimport " in import_string or import_string.startswith("cimport")
-
+            cimports = detect_cimport(import_string)
             identified_import = partial(identified_import, cimport=cimports)
 
-            just_imports = [
-                item.replace("{|", "{ ").replace("|}", " }")
-                for item in strip_syntax(import_string).split()
-            ]
-
-            direct_imports = just_imports[1:]
-            top_level_module = ""
-            if "as" in just_imports and (just_imports.index("as") + 1) < len(just_imports):
-                while "as" in just_imports:
-                    attribute = None
-                    as_index = just_imports.index("as")
-                    if type_of_import == "from":
-                        attribute = just_imports[as_index - 1]
-                        top_level_module = just_imports[0]
-                        module = top_level_module + "." + attribute
-                        alias = just_imports[as_index + 1]
-                        direct_imports.remove(attribute)
-                        direct_imports.remove(alias)
-                        direct_imports.remove("as")
-                        just_imports[1:] = direct_imports
-                        if attribute == alias and config.remove_redundant_aliases:
-                            yield identified_import(top_level_module, attribute)
-                        else:
-                            yield identified_import(top_level_module, attribute, alias=alias)
-
-                    else:
-                        module = just_imports[as_index - 1]
-                        alias = just_imports[as_index + 1]
-                        just_imports.remove(alias)
-                        just_imports.remove("as")
-                        just_imports.remove(module)
-                        if module == alias and config.remove_redundant_aliases:
-                            yield identified_import(module)
-                        else:
-                            yield identified_import(module, alias=alias)
-
-            if just_imports:
-                if type_of_import == "from":
-                    module = just_imports.pop(0)
-                    for attribute in just_imports:
-                        yield identified_import(module, attribute)
-                else:
-                    for module in just_imports:
-                        yield identified_import(module)
+            just_imports = prepare_just_imports(import_string)
+            for part in parse_import_parts(type_of_import, just_imports, config):
+                yield identified_import(part.module, part.attribute, alias=part.alias)

@@ -1,8 +1,8 @@
 """Shared low-level parsing utilities."""
 
 import re
-from collections.abc import Callable
-from typing import Literal, NamedTuple
+from collections.abc import Callable, Iterator
+from typing import Literal, NamedTuple, Any
 
 from .settings import Config
 
@@ -183,3 +183,86 @@ def import_type(
     if line.startswith("lazy from "):
         return "lazy_from"
     return None
+
+
+class ParsedImportPart(NamedTuple):
+    """单个解析的 import 部分。"""
+    module: str
+    attribute: str | None = None
+    alias: str | None = None
+    is_cimport: bool = False
+
+
+def parse_import_parts(
+    type_of_import: Literal["from", "straight"],
+    just_imports: list[str],
+    config: Config,
+) -> Iterator[ParsedImportPart]:
+    """将 import 部分解析为多个独立的 import 部分。"""
+    direct_imports = list(just_imports[1:])
+    if "as" in just_imports and (just_imports.index("as") + 1) < len(just_imports):
+        while "as" in just_imports:
+            as_index = just_imports.index("as")
+            if type_of_import == "from":
+                attribute = just_imports[as_index - 1]
+                top_level_module = just_imports[0]
+                module = top_level_module + "." + attribute
+                alias = just_imports[as_index + 1]
+                
+                # 更新列表
+                if attribute in direct_imports:
+                    direct_imports.remove(attribute)
+                if alias in direct_imports:
+                    direct_imports.remove(alias)
+                if "as" in direct_imports:
+                    direct_imports.remove("as")
+                just_imports[1:] = direct_imports
+                
+                if attribute == alias and config.remove_redundant_aliases:
+                    yield ParsedImportPart(
+                        module=top_level_module,
+                        attribute=attribute
+                    )
+                else:
+                    yield ParsedImportPart(
+                        module=top_level_module,
+                        attribute=attribute,
+                        alias=alias
+                    )
+            else:
+                module = just_imports[as_index - 1]
+                alias = just_imports[as_index + 1]
+                
+                if module in just_imports:
+                    just_imports.remove(module)
+                if alias in just_imports:
+                    just_imports.remove(alias)
+                if "as" in just_imports:
+                    just_imports.remove("as")
+                
+                if module == alias and config.remove_redundant_aliases:
+                    yield ParsedImportPart(module=module)
+                else:
+                    yield ParsedImportPart(module=module, alias=alias)
+    
+    if just_imports:
+        if type_of_import == "from":
+            module = just_imports.pop(0)
+            for attribute in just_imports:
+                yield ParsedImportPart(module=module, attribute=attribute)
+        else:
+            for module in just_imports:
+                yield ParsedImportPart(module=module)
+
+
+def prepare_just_imports(import_string: str) -> list[str]:
+    """准备 import 字符串以供解析。"""
+    return [
+        item.replace("{|", "{ ").replace("|}", " }")
+        for item in strip_syntax(import_string).split()
+    ]
+
+
+def detect_cimport(import_string: str) -> bool:
+    """检测是否是 cimport。"""
+    return " cimport " in import_string or import_string.startswith("cimport")

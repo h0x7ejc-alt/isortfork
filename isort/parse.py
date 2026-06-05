@@ -14,6 +14,7 @@ from ._parse_utils import (
     normalize_line,
     skip_line,
     strip_syntax,
+    prepare_just_imports,
 )
 from .comments import parse as parse_comments
 from .exceptions import MissingSection
@@ -249,10 +250,7 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
                     out_lines.extend(raw_lines)
                     continue
 
-            just_imports = [
-                item.replace("{|", "{ ").replace("|}", " }")
-                for item in strip_syntax(import_string).split()
-            ]
+            just_imports = prepare_just_imports(import_string)
 
             attach_comments_to: list[str] | None = None
             direct_imports = just_imports[1:]
