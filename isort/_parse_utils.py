@@ -38,6 +38,55 @@ def strip_syntax(import_string: str) -> str:
     return import_string.replace("{ ", "{|").replace(" }", "|}")
 
 
+class AliasedImport(NamedTuple):
+    module: str
+    attribute: str | None
+    alias: str
+
+
+class ParsedImportString(NamedTuple):
+    remaining_imports: list[str]
+    direct_imports: list[str]
+    aliased_imports: list[AliasedImport]
+
+
+def split_import_tokens(import_string: str) -> list[str]:
+    return [
+        item.replace("{|", "{ ").replace("|}", " }")
+        for item in strip_syntax(import_string).split()
+    ]
+
+
+def split_aliased_imports(
+    import_string: str, import_kind: Literal["from", "straight"]
+) -> ParsedImportString:
+    just_imports = split_import_tokens(import_string)
+    direct_imports = just_imports[1:]
+    aliased_imports: list[AliasedImport] = []
+
+    if "as" not in just_imports or (just_imports.index("as") + 1) >= len(just_imports):
+        return ParsedImportString(just_imports, direct_imports, aliased_imports)
+
+    while "as" in just_imports:
+        as_index = just_imports.index("as")
+        import_name = just_imports[as_index - 1]
+        alias = just_imports[as_index + 1]
+        if import_kind == "from":
+            module = just_imports[0]
+            direct_imports.remove(import_name)
+            direct_imports.remove(alias)
+            direct_imports.remove("as")
+            just_imports[1:] = direct_imports
+            aliased_imports.append(AliasedImport(module=module, attribute=import_name, alias=alias))
+        else:
+            just_imports.remove(alias)
+            just_imports.remove("as")
+            just_imports.remove(import_name)
+            aliased_imports.append(AliasedImport(module=import_name, attribute=None, alias=alias))
+
+    return ParsedImportString(just_imports, direct_imports, aliased_imports)
+
+
 class SkipLineResult(NamedTuple):
     should_skip: bool
     in_quote: str
@@ -119,7 +168,6 @@ def collect_import_continuation(
                 break
             line = line.lstrip()
 
-            # Still need to check for parentheses after an escaped line
             if "(" in line.split("#")[0] and ")" not in line.split("#")[0]:
                 extra_lines.append(ExtraLine(line=line, comment=comment))
                 import_string += line_separator + line

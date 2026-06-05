@@ -13,6 +13,8 @@ from ._parse_utils import (
     normalize_from_import_string,
     normalize_line,
     skip_line,
+    split_aliased_imports,
+    split_import_tokens,
     strip_syntax,
 )
 from .comments import parse as parse_comments
@@ -201,10 +203,6 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
                 out_lines.append(raw_line)
                 continue
 
-            # Detect PEP 810 lazy imports (``lazy import X`` / ``lazy from X import Y``).
-            # We strip the ``lazy `` prefix so the rest of the parsing logic works normally
-            # on the resulting ``import X`` / ``from X import Y`` string.  The original
-            # lazy type is remembered in ``is_lazy`` and used later when storing the result.
             is_lazy = type_of_import in ("lazy_straight", "lazy_from")
             if is_lazy:
                 line = line[len("lazy ") :]
@@ -215,7 +213,7 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
             nested_comments = {}
             import_string, comment = parse_comments(line)
             comments = [comment] if comment is not None else []
-            line_parts = [part for part in strip_syntax(import_string).strip().split(" ") if part]
+            line_parts = split_import_tokens(import_string)
             if type_of_import == "from" and len(line_parts) == 2 and comments:
                 nested_comments[line_parts[-1]] = comments[0]
 
@@ -232,7 +230,6 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
             )
             for extra_line in extra_lines:
                 raw_lines.append(extra_line.line)
-                # If during parsing of the continuation lines we encounter a comment, we record it.
                 if extra_line.comment is not None:
                     comments.append(extra_line.comment)
                     stripped_line = strip_syntax(extra_line.line).strip()
@@ -249,66 +246,54 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
                     out_lines.extend(raw_lines)
                     continue
 
-            just_imports = [
-                item.replace("{|", "{ ").replace("|}", " }")
-                for item in strip_syntax(import_string).split()
-            ]
+            parsed_imports = split_aliased_imports(import_string, type_of_import)
+            just_imports = parsed_imports.remaining_imports
+            direct_imports = parsed_imports.direct_imports
 
             attach_comments_to: list[str] | None = None
-            direct_imports = just_imports[1:]
-            straight_import = True
-            top_level_module = ""
-            if "as" in just_imports and (just_imports.index("as") + 1) < len(just_imports):
-                straight_import = False
-                while "as" in just_imports:
-                    nested_module = None
-                    as_index = just_imports.index("as")
-                    if type_of_import == "from":
-                        nested_module = just_imports[as_index - 1]
-                        top_level_module = just_imports[0]
-                        module = top_level_module + "." + nested_module
-                        as_name = just_imports[as_index + 1]
-                        direct_imports.remove(nested_module)
-                        direct_imports.remove(as_name)
-                        direct_imports.remove("as")
-                        if nested_module == as_name and config.remove_redundant_aliases:
-                            pass
-                        elif as_name not in as_map["from"][module]:  # pragma: no branch
-                            as_map["from"][module].append(as_name)
+            straight_import = not parsed_imports.aliased_imports
+            for aliased_import in parsed_imports.aliased_imports:
+                nested_module = aliased_import.attribute
+                as_name = aliased_import.alias
+                if type_of_import == "from":
+                    assert nested_module is not None  # noqa: S101
+                    module = f"{aliased_import.module}.{nested_module}"
+                    if nested_module == as_name and config.remove_redundant_aliases:
+                        pass
+                    elif as_name not in as_map["from"][module]:  # pragma: no branch
+                        as_map["from"][module].append(as_name)
 
-                        full_name = f"{nested_module} as {as_name}"
-                        associated_comment = nested_comments.get(full_name)
-                        if associated_comment is not None:
-                            categorized_comments["nested"].setdefault(top_level_module, {})[
-                                full_name
-                            ] = associated_comment
-                            if associated_comment in comments:  # pragma: no branch
-                                comments.pop(comments.index(associated_comment))
+                    full_name = f"{nested_module} as {as_name}"
+                    associated_comment = nested_comments.get(full_name)
+                    if associated_comment is not None:
+                        categorized_comments["nested"].setdefault(aliased_import.module, {})[
+                            full_name
+                        ] = associated_comment
+                        if associated_comment in comments:  # pragma: no branch
+                            comments.pop(comments.index(associated_comment))
+                else:
+                    module = aliased_import.module
+                    if module == as_name and config.remove_redundant_aliases:
+                        pass
+                    elif as_name not in as_map["straight"][module]:
+                        as_map["straight"][module].append(as_name)
+
+                if comments and attach_comments_to is None:
+                    if nested_module and config.combine_as_imports:
+                        attach_comments_to = categorized_comments["from"].setdefault(
+                            f"{aliased_import.module}.__combined_as__", []
+                        )
                     else:
-                        module = just_imports[as_index - 1]
-                        as_name = just_imports[as_index + 1]
-                        if module == as_name and config.remove_redundant_aliases:
-                            pass
-                        elif as_name not in as_map["straight"][module]:
-                            as_map["straight"][module].append(as_name)
-
-                    if comments and attach_comments_to is None:
-                        if nested_module and config.combine_as_imports:
-                            attach_comments_to = categorized_comments["from"].setdefault(
-                                f"{top_level_module}.__combined_as__", []
+                        if type_of_import == "from" or (
+                            config.remove_redundant_aliases and as_name == module.split(".")[-1]
+                        ):
+                            attach_comments_to = categorized_comments["straight"].setdefault(
+                                module, []
                             )
                         else:
-                            if type_of_import == "from" or (
-                                config.remove_redundant_aliases and as_name == module.split(".")[-1]
-                            ):
-                                attach_comments_to = categorized_comments["straight"].setdefault(
-                                    module, []
-                                )
-                            else:
-                                attach_comments_to = categorized_comments["straight"].setdefault(
-                                    f"{module} as {as_name}", []
-                                )
-                    del just_imports[as_index : as_index + 2]
+                            attach_comments_to = categorized_comments["straight"].setdefault(
+                                f"{module} as {as_name}", []
+                            )
 
             if type_of_import == "from":
                 import_from = just_imports.pop(0)

@@ -1,0 +1,336 @@
+diff --git a/isort/_parse_utils.py b/isort/_parse_utils.py
+index a3c13ed8..2630724b 100644
+--- a/isort/_parse_utils.py
++++ b/isort/_parse_utils.py
+@@ -38,6 +38,55 @@ def strip_syntax(import_string: str) -> str:
+     return import_string.replace("{ ", "{|").replace(" }", "|}")
+ 
+ 
++class AliasedImport(NamedTuple):
++    module: str
++    attribute: str | None
++    alias: str
++
++
++class ParsedImportString(NamedTuple):
++    remaining_imports: list[str]
++    direct_imports: list[str]
++    aliased_imports: list[AliasedImport]
++
++
++def split_import_tokens(import_string: str) -> list[str]:
++    return [
++        item.replace("{|", "{ ").replace("|}", " }")
++        for item in strip_syntax(import_string).split()
++    ]
++
++
++def split_aliased_imports(
++    import_string: str, import_kind: Literal["from", "straight"]
++) -> ParsedImportString:
++    just_imports = split_import_tokens(import_string)
++    direct_imports = just_imports[1:]
++    aliased_imports: list[AliasedImport] = []
++
++    if "as" not in just_imports or (just_imports.index("as") + 1) >= len(just_imports):
++        return ParsedImportString(just_imports, direct_imports, aliased_imports)
++
++    while "as" in just_imports:
++        as_index = just_imports.index("as")
++        import_name = just_imports[as_index - 1]
++        alias = just_imports[as_index + 1]
++        if import_kind == "from":
++            module = just_imports[0]
++            direct_imports.remove(import_name)
++            direct_imports.remove(alias)
++            direct_imports.remove("as")
++            just_imports[1:] = direct_imports
++            aliased_imports.append(AliasedImport(module=module, attribute=import_name, alias=alias))
++        else:
++            just_imports.remove(alias)
++            just_imports.remove("as")
++            just_imports.remove(import_name)
++            aliased_imports.append(AliasedImport(module=import_name, attribute=None, alias=alias))
++
++    return ParsedImportString(just_imports, direct_imports, aliased_imports)
++
++
+ class SkipLineResult(NamedTuple):
+     should_skip: bool
+     in_quote: str
+@@ -119,7 +168,6 @@ def collect_import_continuation(
+                 break
+             line = line.lstrip()
+ 
+-            # Still need to check for parentheses after an escaped line
+             if "(" in line.split("#")[0] and ")" not in line.split("#")[0]:
+                 extra_lines.append(ExtraLine(line=line, comment=comment))
+                 import_string += line_separator + line
+diff --git a/isort/identify.py b/isort/identify.py
+index 08a640e7..7db449c1 100644
+--- a/isort/identify.py
++++ b/isort/identify.py
+@@ -13,7 +13,7 @@ from ._parse_utils import (
+     normalize_from_import_string,
+     normalize_line,
+     skip_line,
+-    strip_syntax,
++    split_aliased_imports,
+ )
+ from .comments import parse as parse_comments
+ from .settings import DEFAULT_CONFIG, Config
+@@ -101,7 +101,7 @@ def imports(
+ 
+             identified_import = partial(
+                 Import,
+-                index + 1,  # line numbers use 1 based indexing
++                index + 1,
+                 raw_line.startswith((" ", "\t")),
+                 file_path=file_path,
+             )
+@@ -109,7 +109,6 @@ def imports(
+             _, import_string, _ = collect_import_continuation(
+                 line,
+                 import_string,
+-                # We can disregard `index` here because it is no longer accessed after this line.
+                 lambda: parse_comments(next(indexed_input)[1]),
+             )
+ 
+@@ -119,42 +118,26 @@ def imports(
+             cimports: bool = " cimport " in import_string or import_string.startswith("cimport")
+ 
+             identified_import = partial(identified_import, cimport=cimports)
++            shared_import_kind = "from" if type_of_import == "from" else "straight"
++            parsed_imports = split_aliased_imports(import_string, shared_import_kind)
++            just_imports = parsed_imports.remaining_imports
+ 
+-            just_imports = [
+-                item.replace("{|", "{ ").replace("|}", " }")
+-                for item in strip_syntax(import_string).split()
+-            ]
+-
+-            direct_imports = just_imports[1:]
+-            top_level_module = ""
+-            if "as" in just_imports and (just_imports.index("as") + 1) < len(just_imports):
+-                while "as" in just_imports:
+-                    attribute = None
+-                    as_index = just_imports.index("as")
+-                    if type_of_import == "from":
+-                        attribute = just_imports[as_index - 1]
+-                        top_level_module = just_imports[0]
+-                        module = top_level_module + "." + attribute
+-                        alias = just_imports[as_index + 1]
+-                        direct_imports.remove(attribute)
+-                        direct_imports.remove(alias)
+-                        direct_imports.remove("as")
+-                        just_imports[1:] = direct_imports
+-                        if attribute == alias and config.remove_redundant_aliases:
+-                            yield identified_import(top_level_module, attribute)
+-                        else:
+-                            yield identified_import(top_level_module, attribute, alias=alias)
+-
++            for aliased_import in parsed_imports.aliased_imports:
++                if type_of_import == "from":
++                    attribute = aliased_import.attribute
++                    if attribute == aliased_import.alias and config.remove_redundant_aliases:
++                        yield identified_import(aliased_import.module, attribute)
++                    else:
++                        yield identified_import(
++                            aliased_import.module,
++                            attribute,
++                            alias=aliased_import.alias,
++                        )
++                else:
++                    if aliased_import.module == aliased_import.alias and config.remove_redundant_aliases:
++                        yield identified_import(aliased_import.module)
+                     else:
+-                        module = just_imports[as_index - 1]
+-                        alias = just_imports[as_index + 1]
+-                        just_imports.remove(alias)
+-                        just_imports.remove("as")
+-                        just_imports.remove(module)
+-                        if module == alias and config.remove_redundant_aliases:
+-                            yield identified_import(module)
+-                        else:
+-                            yield identified_import(module, alias=alias)
++                        yield identified_import(aliased_import.module, alias=aliased_import.alias)
+ 
+             if just_imports:
+                 if type_of_import == "from":
+diff --git a/isort/parse.py b/isort/parse.py
+index 03678397..d60f38bc 100644
+--- a/isort/parse.py
++++ b/isort/parse.py
+@@ -13,6 +13,8 @@ from ._parse_utils import (
+     normalize_from_import_string,
+     normalize_line,
+     skip_line,
++    split_aliased_imports,
++    split_import_tokens,
+     strip_syntax,
+ )
+ from .comments import parse as parse_comments
+@@ -201,10 +203,6 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
+                 out_lines.append(raw_line)
+                 continue
+ 
+-            # Detect PEP 810 lazy imports (``lazy import X`` / ``lazy from X import Y``).
+-            # We strip the ``lazy `` prefix so the rest of the parsing logic works normally
+-            # on the resulting ``import X`` / ``from X import Y`` string.  The original
+-            # lazy type is remembered in ``is_lazy`` and used later when storing the result.
+             is_lazy = type_of_import in ("lazy_straight", "lazy_from")
+             if is_lazy:
+                 line = line[len("lazy ") :]
+@@ -215,7 +213,7 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
+             nested_comments = {}
+             import_string, comment = parse_comments(line)
+             comments = [comment] if comment is not None else []
+-            line_parts = [part for part in strip_syntax(import_string).strip().split(" ") if part]
++            line_parts = split_import_tokens(import_string)
+             if type_of_import == "from" and len(line_parts) == 2 and comments:
+                 nested_comments[line_parts[-1]] = comments[0]
+ 
+@@ -232,7 +230,6 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
+             )
+             for extra_line in extra_lines:
+                 raw_lines.append(extra_line.line)
+-                # If during parsing of the continuation lines we encounter a comment, we record it.
+                 if extra_line.comment is not None:
+                     comments.append(extra_line.comment)
+                     stripped_line = strip_syntax(extra_line.line).strip()
+@@ -249,66 +246,54 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
+                     out_lines.extend(raw_lines)
+                     continue
+ 
+-            just_imports = [
+-                item.replace("{|", "{ ").replace("|}", " }")
+-                for item in strip_syntax(import_string).split()
+-            ]
++            parsed_imports = split_aliased_imports(import_string, type_of_import)
++            just_imports = parsed_imports.remaining_imports
++            direct_imports = parsed_imports.direct_imports
+ 
+             attach_comments_to: list[str] | None = None
+-            direct_imports = just_imports[1:]
+-            straight_import = True
+-            top_level_module = ""
+-            if "as" in just_imports and (just_imports.index("as") + 1) < len(just_imports):
+-                straight_import = False
+-                while "as" in just_imports:
+-                    nested_module = None
+-                    as_index = just_imports.index("as")
+-                    if type_of_import == "from":
+-                        nested_module = just_imports[as_index - 1]
+-                        top_level_module = just_imports[0]
+-                        module = top_level_module + "." + nested_module
+-                        as_name = just_imports[as_index + 1]
+-                        direct_imports.remove(nested_module)
+-                        direct_imports.remove(as_name)
+-                        direct_imports.remove("as")
+-                        if nested_module == as_name and config.remove_redundant_aliases:
+-                            pass
+-                        elif as_name not in as_map["from"][module]:  # pragma: no branch
+-                            as_map["from"][module].append(as_name)
+-
+-                        full_name = f"{nested_module} as {as_name}"
+-                        associated_comment = nested_comments.get(full_name)
+-                        if associated_comment is not None:
+-                            categorized_comments["nested"].setdefault(top_level_module, {})[
+-                                full_name
+-                            ] = associated_comment
+-                            if associated_comment in comments:  # pragma: no branch
+-                                comments.pop(comments.index(associated_comment))
++            straight_import = not parsed_imports.aliased_imports
++            for aliased_import in parsed_imports.aliased_imports:
++                nested_module = aliased_import.attribute
++                as_name = aliased_import.alias
++                if type_of_import == "from":
++                    assert nested_module is not None  # noqa: S101
++                    module = f"{aliased_import.module}.{nested_module}"
++                    if nested_module == as_name and config.remove_redundant_aliases:
++                        pass
++                    elif as_name not in as_map["from"][module]:  # pragma: no branch
++                        as_map["from"][module].append(as_name)
++
++                    full_name = f"{nested_module} as {as_name}"
++                    associated_comment = nested_comments.get(full_name)
++                    if associated_comment is not None:
++                        categorized_comments["nested"].setdefault(aliased_import.module, {})[
++                            full_name
++                        ] = associated_comment
++                        if associated_comment in comments:  # pragma: no branch
++                            comments.pop(comments.index(associated_comment))
++                else:
++                    module = aliased_import.module
++                    if module == as_name and config.remove_redundant_aliases:
++                        pass
++                    elif as_name not in as_map["straight"][module]:
++                        as_map["straight"][module].append(as_name)
++
++                if comments and attach_comments_to is None:
++                    if nested_module and config.combine_as_imports:
++                        attach_comments_to = categorized_comments["from"].setdefault(
++                            f"{aliased_import.module}.__combined_as__", []
++                        )
+                     else:
+-                        module = just_imports[as_index - 1]
+-                        as_name = just_imports[as_index + 1]
+-                        if module == as_name and config.remove_redundant_aliases:
+-                            pass
+-                        elif as_name not in as_map["straight"][module]:
+-                            as_map["straight"][module].append(as_name)
+-
+-                    if comments and attach_comments_to is None:
+-                        if nested_module and config.combine_as_imports:
+-                            attach_comments_to = categorized_comments["from"].setdefault(
+-                                f"{top_level_module}.__combined_as__", []
++                        if type_of_import == "from" or (
++                            config.remove_redundant_aliases and as_name == module.split(".")[-1]
++                        ):
++                            attach_comments_to = categorized_comments["straight"].setdefault(
++                                module, []
+                             )
+                         else:
+-                            if type_of_import == "from" or (
+-                                config.remove_redundant_aliases and as_name == module.split(".")[-1]
+-                            ):
+-                                attach_comments_to = categorized_comments["straight"].setdefault(
+-                                    module, []
+-                                )
+-                            else:
+-                                attach_comments_to = categorized_comments["straight"].setdefault(
+-                                    f"{module} as {as_name}", []
+-                                )
+-                    del just_imports[as_index : as_index + 2]
++                            attach_comments_to = categorized_comments["straight"].setdefault(
++                                f"{module} as {as_name}", []
++                            )
+ 
+             if type_of_import == "from":
+                 import_from = just_imports.pop(0)
+diff --git a/tests/unit/test_parse.py b/tests/unit/test_parse.py
+index 3c1c5d1c..1a246c1c 100644
+--- a/tests/unit/test_parse.py
++++ b/tests/unit/test_parse.py
+@@ -96,3 +96,21 @@ def test_normalize_line(raw_line, expected):
+     line, returned_raw_line = _parse_utils.normalize_line(raw_line)
+     assert line == expected
+     assert returned_raw_line == raw_line
++
++
++def test_split_aliased_imports_for_straight_imports():
++    parsed = _parse_utils.split_aliased_imports("import os as operating_system, sys", "straight")
++    assert parsed.remaining_imports == ["sys"]
++    assert parsed.direct_imports == ["os", "as", "operating_system", "sys"]
++    assert parsed.aliased_imports == [
++        _parse_utils.AliasedImport(module="os", attribute=None, alias="operating_system")
++    ]
++
++
++def test_split_aliased_imports_for_from_imports():
++    parsed = _parse_utils.split_aliased_imports("from os import path as system_path, sep", "from")
++    assert parsed.remaining_imports == ["os", "sep"]
++    assert parsed.direct_imports == ["sep"]
++    assert parsed.aliased_imports == [
++        _parse_utils.AliasedImport(module="os", attribute="path", alias="system_path")
++    ]

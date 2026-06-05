@@ -96,3 +96,21 @@ def test_normalize_line(raw_line, expected):
     line, returned_raw_line = _parse_utils.normalize_line(raw_line)
     assert line == expected
     assert returned_raw_line == raw_line
+
+
+def test_split_aliased_imports_for_straight_imports():
+    parsed = _parse_utils.split_aliased_imports("import os as operating_system, sys", "straight")
+    assert parsed.remaining_imports == ["sys"]
+    assert parsed.direct_imports == ["os", "as", "operating_system", "sys"]
+    assert parsed.aliased_imports == [
+        _parse_utils.AliasedImport(module="os", attribute=None, alias="operating_system")
+    ]
+
+
+def test_split_aliased_imports_for_from_imports():
+    parsed = _parse_utils.split_aliased_imports("from os import path as system_path, sep", "from")
+    assert parsed.remaining_imports == ["os", "sep"]
+    assert parsed.direct_imports == ["sep"]
+    assert parsed.aliased_imports == [
+        _parse_utils.AliasedImport(module="os", attribute="path", alias="system_path")
+    ]
