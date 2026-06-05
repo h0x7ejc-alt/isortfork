@@ -1,0 +1,216 @@
+diff --git a/isort/main.py b/isort/main.py
+index 72d95b97..40964a40 100644
+--- a/isort/main.py
++++ b/isort/main.py
+@@ -13,7 +13,7 @@ from pathlib import Path
+ from typing import Any
+ from warnings import warn
+ 
+-from . import __version__, api, files, sections
++from . import __version__, api, files, place, sections
+ from .exceptions import FileSkipped, ISortError, UnsupportedEncoding
+ from .format import create_terminal_printer
+ from .logo import ASCII_ART
+@@ -199,6 +199,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
+         action="store_true",
+         help="See the files isort will be run against with the current config options.",
+     )
++    general_group.add_argument(
++        "--show-path-decision",
++        dest="show_path_decision",
++        action="store_true",
++        help="Show why a given file is skipped or why a module is classified as "
++        "FIRSTPARTY / THIRDPARTY / STDLIB / etc.",
++    )
+     general_group.add_argument(
+         "--df",
+         "--diff",
+@@ -986,6 +993,88 @@ def identify_imports_main(
+             print(str(identified_import))
+ 
+ 
++def show_path_decision_main(
++    argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None
++) -> None:
++    parser = argparse.ArgumentParser(
++        description="Show why a module is classified as it is or why a file is skipped."
++    )
++    parser.add_argument(
++        "targets",
++        nargs="+",
++        help="One or more module names or file paths to analyze.",
++    )
++
++    arguments = parser.parse_args(argv)
++
++    targets = arguments.targets
++    if targets == ["-"]:
++        sys.exit("Error: --show-path-decision requires module names or file paths, not stdin.")
++
++    config = Config()
++
++    for target in targets:
++        target_path = Path(target)
++        if target_path.exists() and (target_path.is_file() or target_path.is_dir()):
++            _show_file_decision(target_path, config)
++        else:
++            _show_module_decision(target, config)
++
++
++def _show_file_decision(file_path: Path, config: Config) -> None:
++    print(f"\n{'=' * 60}")
++    print(f"File: {file_path}")
++    print(f"{'=' * 60}")
++
++    is_skipped, skip_reason = config.is_skipped_with_reason(file_path.resolve())
++    if is_skipped:
++        print(f"  SKIPPED: {skip_reason}")
++        print()
++        return
++
++    print(f"  Not skipped ({skip_reason})")
++
++    if not config.is_supported_filetype(str(file_path)):
++        print(f"  Not a supported file type (supported: {config.supported_extensions})")
++        print()
++        return
++
++    print()
++    try:
++        identified_imports = list(api.find_imports_in_file(str(file_path), config=config))
++    except OSError as error:
++        print(f"  Error reading file: {error}")
++        print()
++        return
++
++    if not identified_imports:
++        print("  No imports found in this file.")
++        print()
++        return
++
++    print(f"  Found {len(identified_imports)} import(s):")
++    print()
++    for imp in identified_imports:
++        module_name = imp.module
++        section, reason = place.module_with_reason(module_name, config)
++        print(f"  {imp.statement()}")
++        print(f"    -> Section: {section}")
++        print(f"    -> Reason:  {reason}")
++        print()
++    print()
++
++
++def _show_module_decision(module_name: str, config: Config) -> None:
++    print(f"\n{'=' * 60}")
++    print(f"Module: {module_name}")
++    print(f"{'=' * 60}")
++
++    section, reason = place.module_with_reason(module_name, config)
++    print(f"  Section: {section}")
++    print(f"  Reason:  {reason}")
++    print()
++
++
+ # Ignore DeepSource cyclomatic complexity check for this function. It is one
+ # the main entrypoints so sort of expected to be complex.
+ # skipcq: PY-R1000
+@@ -997,8 +1086,11 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+ 
+     show_config: bool = arguments.pop("show_config", False)
+     show_files: bool = arguments.pop("show_files", False)
++    show_path_decision: bool = arguments.pop("show_path_decision", False)
+     if show_config and show_files:
+         sys.exit("Error: either specify show-config or show-files not both.")
++    if show_path_decision and (show_config or show_files):
++        sys.exit("Error: --show-path-decision cannot be combined with --show-config or --show-files.")
+ 
+     if "settings_path" in arguments:
+         if os.path.isfile(arguments["settings_path"]):
+@@ -1014,7 +1106,7 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+             warn(f"virtual_env dir does not exist: {arguments['virtual_env']}", stacklevel=2)
+ 
+     file_names = arguments.pop("files", [])
+-    if not file_names and not show_config:
++    if not file_names and not show_config and not show_path_decision:
+         print(QUICK_GUIDE)
+         if arguments:
+             sys.exit("Error: arguments passed in without any paths or content.")
+@@ -1055,6 +1147,14 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+     if show_config:
+         print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
+         return
++    if show_path_decision:
++        for target in file_names:
++            target_path = Path(target)
++            if target_path.exists() and (target_path.is_file() or target_path.is_dir()):
++                _show_file_decision(target_path, config)
++            else:
++                _show_module_decision(target, config)
++        return
+     if file_names == ["-"]:
+         file_path = Path(stream_filename) if stream_filename else None
+         if show_files:
+diff --git a/isort/settings.py b/isort/settings.py
+index 9c22fa5a..944e916e 100644
+--- a/isort/settings.py
++++ b/isort/settings.py
+@@ -561,6 +561,10 @@ class Config(_Config):
+ 
+     def is_skipped(self, file_path: Path) -> bool:
+         """Returns True if the file and/or folder should be skipped based on current settings."""
++        return self.is_skipped_with_reason(file_path)[0]
++
++    def is_skipped_with_reason(self, file_path: Path) -> tuple[bool, str]:
++        """Returns a tuple of (is_skipped, reason) for the given file path."""
+         if self.directory and Path(self.directory) in file_path.resolve().parents:
+             file_name = os.path.relpath(file_path.resolve(), self.directory)
+         else:
+@@ -576,24 +580,24 @@ class Config(_Config):
+             if posixpath.abspath(normalized_path) == posixpath.abspath(
+                 skip_path.replace("\\", "/")
+             ):
+-                return True
++                return (True, f"Matched skip path: {skip_path}")
+ 
+         position = os.path.split(file_name)
+         while position[1]:
+             if position[1] in self.skips:
+-                return True
++                return (True, f"Matched skip directory name: {position[1]}")
+             position = os.path.split(position[0])
+ 
+         for sglob in self.skip_globs:
+             if fnmatch.fnmatch(file_name, sglob) or fnmatch.fnmatch("/" + file_name, sglob):
+-                return True
++                return (True, f"Matched skip glob pattern: {sglob}")
+ 
+         if not (os.path.isfile(os_path) or os.path.isdir(os_path) or os.path.islink(os_path)):
+-            return True
++            return (True, "File does not exist on disk")
+ 
+         if self.skip_gitignore:
+             if file_path.name == ".git":  # pragma: no cover
+-                return True
++                return (True, "Skipped because file is .git directory")
+ 
+             git_folder = None
+ 
+@@ -605,16 +609,14 @@ class Config(_Config):
+             else:
+                 git_folder = self._check_folder_git_ls_files(str(file_path.parent))
+ 
+-            # git_ls_files are good files you should parse. If you're not in the allow list, skip.
+-
+             if (
+                 git_folder
+                 and not file_path.is_dir()
+                 and str(file_path.resolve()) not in self.git_ls_files[git_folder]
+             ):
+-                return True
++                return (True, "Not tracked by git (--skip-gitignore enabled)")
+ 
+-        return False
++        return (False, "Not skipped")
+ 
+     @property
+     def known_patterns(self) -> list[tuple[Pattern[str], str]]:
