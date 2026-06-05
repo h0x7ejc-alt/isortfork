@@ -1,0 +1,104 @@
+diff --git a/isort/_parse_utils.py b/isort/_parse_utils.py
+index a3c13ed8..c7ed6265 100644
+--- a/isort/_parse_utils.py
++++ b/isort/_parse_utils.py
+@@ -183,3 +183,21 @@ def import_type(
+     if line.startswith("lazy from "):
+         return "lazy_from"
+     return None
++
++
++def split_import_to_parts(import_string: str) -> list[str]:
++    return [
++        item.replace("{|", "{ ").replace("|}", " }")
++        for item in strip_syntax(import_string).split()
++    ]
++
++
++def split_line_to_statements(raw_line: str) -> list[str]:
++    line, *end_of_line_comment = raw_line.split("#", 1)
++    if ";" in line:
++        statements = [part.strip() for part in line.split(";")]
++    else:
++        statements = [line.strip()]
++    if end_of_line_comment:
++        statements[-1] = f"{statements[-1]}#{end_of_line_comment[0]}"
++    return statements
+diff --git a/isort/identify.py b/isort/identify.py
+index 08a640e7..96ad0f93 100644
+--- a/isort/identify.py
++++ b/isort/identify.py
+@@ -13,7 +13,8 @@ from ._parse_utils import (
+     normalize_from_import_string,
+     normalize_line,
+     skip_line,
+-    strip_syntax,
++    split_import_to_parts,
++    split_line_to_statements,
+ )
+ from .comments import parse as parse_comments
+ from .settings import DEFAULT_CONFIG, Config
+@@ -86,10 +87,7 @@ def imports(
+                 stripped_line = next_line.strip().split("#")[0]
+             continue  # pragma: no cover
+ 
+-        line, *end_of_line_comment = raw_line.split("#", 1)
+-        statements = [line.strip() for line in line.split(";")]
+-        if end_of_line_comment:
+-            statements[-1] = f"{statements[-1]}#{end_of_line_comment[0]}"
++        statements = split_line_to_statements(raw_line)
+ 
+         for statement in statements:
+             line, _raw_line = normalize_line(statement)
+@@ -120,10 +118,7 @@ def imports(
+ 
+             identified_import = partial(identified_import, cimport=cimports)
+ 
+-            just_imports = [
+-                item.replace("{|", "{ ").replace("|}", " }")
+-                for item in strip_syntax(import_string).split()
+-            ]
++            just_imports = split_import_to_parts(import_string)
+ 
+             direct_imports = just_imports[1:]
+             top_level_module = ""
+diff --git a/isort/parse.py b/isort/parse.py
+index 03678397..ccaa0f2d 100644
+--- a/isort/parse.py
++++ b/isort/parse.py
+@@ -13,6 +13,8 @@ from ._parse_utils import (
+     normalize_from_import_string,
+     normalize_line,
+     skip_line,
++    split_import_to_parts,
++    split_line_to_statements,
+     strip_syntax,
+ )
+ from .comments import parse as parse_comments
+@@ -185,13 +187,7 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
+ 
+                         starting_line = in_lines[import_index]
+ 
+-        line, *end_of_line_comment = line.split("#", 1)
+-        if ";" in line:
+-            statements = [line.strip() for line in line.split(";")]
+-        else:
+-            statements = [line]
+-        if end_of_line_comment:
+-            statements[-1] = f"{statements[-1]}#{end_of_line_comment[0]}"
++        statements = split_line_to_statements(line)
+ 
+         for statement in statements:
+             line, raw_line = normalize_line(statement)
+@@ -249,10 +245,7 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
+                     out_lines.extend(raw_lines)
+                     continue
+ 
+-            just_imports = [
+-                item.replace("{|", "{ ").replace("|}", " }")
+-                for item in strip_syntax(import_string).split()
+-            ]
++            just_imports = split_import_to_parts(import_string)
+ 
+             attach_comments_to: list[str] | None = None
+             direct_imports = just_imports[1:]

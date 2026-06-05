@@ -183,3 +183,21 @@ def import_type(
     if line.startswith("lazy from "):
         return "lazy_from"
     return None
+
+
+def split_import_to_parts(import_string: str) -> list[str]:
+    return [
+        item.replace("{|", "{ ").replace("|}", " }")
+        for item in strip_syntax(import_string).split()
+    ]
+
+
+def split_line_to_statements(raw_line: str) -> list[str]:
+    line, *end_of_line_comment = raw_line.split("#", 1)
+    if ";" in line:
+        statements = [part.strip() for part in line.split(";")]
+    else:
+        statements = [line.strip()]
+    if end_of_line_comment:
+        statements[-1] = f"{statements[-1]}#{end_of_line_comment[0]}"
+    return statements

@@ -13,7 +13,8 @@ from ._parse_utils import (
     normalize_from_import_string,
     normalize_line,
     skip_line,
-    strip_syntax,
+    split_import_to_parts,
+    split_line_to_statements,
 )
 from .comments import parse as parse_comments
 from .settings import DEFAULT_CONFIG, Config
@@ -86,10 +87,7 @@ def imports(
                 stripped_line = next_line.strip().split("#")[0]
             continue  # pragma: no cover
 
-        line, *end_of_line_comment = raw_line.split("#", 1)
-        statements = [line.strip() for line in line.split(";")]
-        if end_of_line_comment:
-            statements[-1] = f"{statements[-1]}#{end_of_line_comment[0]}"
+        statements = split_line_to_statements(raw_line)
 
         for statement in statements:
             line, _raw_line = normalize_line(statement)
@@ -120,10 +118,7 @@ def imports(
 
             identified_import = partial(identified_import, cimport=cimports)
 
-            just_imports = [
-                item.replace("{|", "{ ").replace("|}", " }")
-                for item in strip_syntax(import_string).split()
-            ]
+            just_imports = split_import_to_parts(import_string)
 
             direct_imports = just_imports[1:]
             top_level_module = ""
