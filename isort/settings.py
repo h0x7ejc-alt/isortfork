@@ -305,15 +305,51 @@ class Config(_Config):
             super().__init__(**config_vars)
             return
 
-        # We can't use self.quiet to conditionally show warnings before super.__init__() is called
-        # at the end of this method. _Config is also frozen so setting self.quiet isn't possible.
-        # Therefore we extract quiet early here in a variable and use that in warning conditions.
         quiet = config_overrides.get("quiet", False)
+        runtime_config = self._prepare_runtime_config(config_overrides)
+        project_root, config_settings = self._resolve_config_settings(
+            settings_file=settings_file,
+            settings_path=settings_path,
+            quiet=quiet,
+        )
+        profile = self._resolve_profile(config_settings=config_settings, runtime_config=runtime_config)
+        sources = self._collect_sources(
+            profile=profile,
+            config_settings=config_settings,
+            runtime_config=runtime_config,
+        )
+        combined_config = self._combine_config(
+            profile=profile,
+            config_settings=config_settings,
+            runtime_config=runtime_config,
+        )
+        known_other, import_headings, import_footers = self._normalize_config(
+            combined_config=combined_config,
+            config_settings=config_settings,
+            quiet=quiet,
+        )
+        self._expand_src_paths(combined_config=combined_config, project_root=project_root)
+        self._resolve_formatter(combined_config)
+        self._finalize_config(
+            combined_config=combined_config,
+            known_other=known_other,
+            import_headings=import_headings,
+            import_footers=import_footers,
+        )
+        self._raise_for_unsupported_settings(combined_config=combined_config, sources=sources)
+        super().__init__(sources=tuple(sources), **combined_config)
 
-        sources: list[dict[str, Any]] = [_DEFAULT_SETTINGS]
+    @staticmethod
+    def _prepare_runtime_config(config_overrides: dict[str, Any]) -> dict[str, Any]:
+        runtime_config = config_overrides.copy()
+        if runtime_config:
+            runtime_config["source"] = RUNTIME_SOURCE
+        return runtime_config
 
-        config_settings: dict[str, Any]
-        project_root: str
+    @staticmethod
+    def _resolve_config_settings(
+        settings_file: str, settings_path: str, quiet: bool
+    ) -> tuple[str, dict[str, Any]]:
         if settings_file:
             config_settings = _get_config_data(
                 settings_file,
@@ -329,52 +365,87 @@ class Config(_Config):
                     "#custom-config-files for more information.",
                     stacklevel=2,
                 )
-        elif settings_path:
+            return project_root, config_settings
+
+        if settings_path:
             if not os.path.exists(settings_path):
                 raise InvalidSettingsPath(settings_path)
 
             settings_path = os.path.abspath(settings_path)
-            project_root, config_settings = _find_config(settings_path)
-        else:
-            config_settings = {}
-            project_root = os.getcwd()
+            return _find_config(settings_path)
 
-        profile_name = config_overrides.get("profile", config_settings.get("profile", ""))
-        profile: dict[str, Any] = {}
-        if profile_name:
-            if profile_name not in profiles:
-                for plugin in entry_points(group="isort.profiles"):
-                    profiles.setdefault(plugin.name, plugin.load())
+        return os.getcwd(), {}
 
-            if profile_name not in profiles:
-                raise ProfileDoesNotExist(profile_name)
+    @staticmethod
+    def _resolve_profile(
+        config_settings: dict[str, Any], runtime_config: dict[str, Any]
+    ) -> dict[str, Any]:
+        profile_name = runtime_config.get("profile", config_settings.get("profile", ""))
+        if not profile_name:
+            return {}
 
-            profile = profiles[profile_name].copy()
-            profile["source"] = f"{profile_name} profile"
+        if profile_name not in profiles:
+            for plugin in entry_points(group="isort.profiles"):
+                profiles.setdefault(plugin.name, plugin.load())
+
+        if profile_name not in profiles:
+            raise ProfileDoesNotExist(profile_name)
+
+        profile = profiles[profile_name].copy()
+        profile["source"] = f"{profile_name} profile"
+        return profile
+
+    @staticmethod
+    def _collect_sources(
+        profile: dict[str, Any],
+        config_settings: dict[str, Any],
+        runtime_config: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        sources: list[dict[str, Any]] = [_DEFAULT_SETTINGS]
+        if profile:
             sources.append(profile)
-
         if config_settings:
             sources.append(config_settings)
-        if config_overrides:
-            config_overrides["source"] = RUNTIME_SOURCE
-            sources.append(config_overrides)
+        if runtime_config:
+            sources.append(runtime_config)
+        return sources
 
-        combined_config = {**profile, **config_settings, **config_overrides}
-        if "indent" in combined_config:
-            indent = str(combined_config["indent"])
-            if indent.isdigit():
-                indent = " " * int(indent)
-            else:
-                indent = indent.strip("'").strip('"')
-                if indent.lower() == "tab":
-                    indent = "\t"
-            combined_config["indent"] = indent
+    @classmethod
+    def _combine_config(
+        cls,
+        profile: dict[str, Any],
+        config_settings: dict[str, Any],
+        runtime_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        combined_config = {**profile, **config_settings, **runtime_config}
+        cls._normalize_indent(combined_config)
+        return combined_config
 
-        known_other = {}
-        import_headings = {}
-        import_footers = {}
+    @staticmethod
+    def _normalize_indent(combined_config: dict[str, Any]) -> None:
+        if "indent" not in combined_config:
+            return
+
+        indent = str(combined_config["indent"])
+        if indent.isdigit():
+            indent = " " * int(indent)
+        else:
+            indent = indent.strip("'").strip('"')
+            if indent.lower() == "tab":
+                indent = "\t"
+        combined_config["indent"] = indent
+
+    @staticmethod
+    def _normalize_config(
+        combined_config: dict[str, Any],
+        config_settings: dict[str, Any],
+        quiet: bool,
+    ) -> tuple[dict[str, frozenset[str]], dict[str, str], dict[str, str]]:
+        known_other: dict[str, frozenset[str]] = {}
+        import_headings: dict[str, str] = {}
+        import_footers: dict[str, str] = {}
+
         for key, value in tuple(combined_config.items()):
-            # Collect all known sections beyond those that have direct entries
             if key.startswith(KNOWN_PREFIX) and key not in (
                 "known_standard_library",
                 "known_future_library",
@@ -414,7 +485,6 @@ class Config(_Config):
             if key.startswith(IMPORT_FOOTER_PREFIX):
                 import_footers[key[len(IMPORT_FOOTER_PREFIX) :].lower()] = str(value)
 
-            # Coerce all provided config values into their correct type
             default_value = _DEFAULT_SETTINGS.get(key, None)
             if default_value is None:
                 continue
@@ -441,32 +511,44 @@ class Config(_Config):
                 else os.getcwd()
             )
 
+        return known_other, import_headings, import_footers
+
+    @staticmethod
+    def _expand_src_paths(combined_config: dict[str, Any], project_root: str) -> None:
         path_root = Path(combined_config.get("directory", project_root)).resolve()
         path_root = path_root if path_root.is_dir() else path_root.parent
         if "src_paths" not in combined_config:
             combined_config["src_paths"] = (path_root / "src", path_root)
-        else:
-            src_paths: list[Path] = []
-            for src_path in combined_config.get("src_paths", ()):
-                full_paths = (
-                    path_root.glob(src_path) if "*" in str(src_path) else [path_root / src_path]
-                )
-                for path in full_paths:
-                    if path not in src_paths:
-                        src_paths.append(path)
+            return
 
-            combined_config["src_paths"] = tuple(src_paths)
+        src_paths: list[Path] = []
+        for src_path in combined_config.get("src_paths", ()):
+            full_paths = path_root.glob(src_path) if "*" in str(src_path) else [path_root / src_path]
+            for path in full_paths:
+                if path not in src_paths:
+                    src_paths.append(path)
 
-        if "formatter" in combined_config:
-            for plugin in entry_points(group="isort.formatters"):
-                if plugin.name == combined_config["formatter"]:
-                    combined_config["formatting_function"] = plugin.load()
-                    break
-            else:
-                raise FormattingPluginDoesNotExist(combined_config["formatter"])
+        combined_config["src_paths"] = tuple(src_paths)
 
-        # Remove any config values that are used for creating config object but
-        # aren't defined in dataclass
+    @staticmethod
+    def _resolve_formatter(combined_config: dict[str, Any]) -> None:
+        if "formatter" not in combined_config:
+            return
+
+        for plugin in entry_points(group="isort.formatters"):
+            if plugin.name == combined_config["formatter"]:
+                combined_config["formatting_function"] = plugin.load()
+                return
+
+        raise FormattingPluginDoesNotExist(combined_config["formatter"])
+
+    @staticmethod
+    def _finalize_config(
+        combined_config: dict[str, Any],
+        known_other: dict[str, frozenset[str]],
+        import_headings: dict[str, str],
+        import_footers: dict[str, str],
+    ) -> None:
         combined_config.pop("source", None)
         combined_config.pop("sources", None)
         combined_config.pop("runtime_src_paths", None)
@@ -482,6 +564,10 @@ class Config(_Config):
                 combined_config.pop(f"{IMPORT_FOOTER_PREFIX}{import_footer_key}")
             combined_config["import_footers"] = import_footers
 
+    @staticmethod
+    def _raise_for_unsupported_settings(
+        combined_config: dict[str, Any], sources: list[dict[str, Any]]
+    ) -> None:
         unsupported_config_errors = {}
         for option in set(combined_config.keys()).difference(
             getattr(_Config, "__dataclass_fields__", {}).keys()
@@ -494,8 +580,6 @@ class Config(_Config):
                     }
         if unsupported_config_errors:
             raise UnsupportedSettings(unsupported_config_errors)
-
-        super().__init__(sources=tuple(sources), **combined_config)
 
     def is_supported_filetype(self, file_name: str) -> bool:
         _root, ext = os.path.splitext(file_name)
