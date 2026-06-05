@@ -18,7 +18,7 @@ from .exceptions import FileSkipped, ISortError, UnsupportedEncoding
 from .format import create_terminal_printer
 from .logo import ASCII_ART
 from .profiles import profiles
-from .settings import VALID_PY_TARGETS, Config, find_all_configs
+from .settings import RUNTIME_SOURCE, VALID_PY_TARGETS, Config, find_all_configs
 from .utils import Trie
 from .wrap_modes import WrapModes
 
@@ -1053,7 +1053,24 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None) 
 
     config = Config(**config_dict)
     if show_config:
-        print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
+        config_data = json.loads(
+            json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert)
+        )
+        config_source = None
+        profile_name = config.profile or None
+        runtime_override = False
+        for source in config.sources:
+            source_name = source.get("source", "")
+            if source_name == RUNTIME_SOURCE:
+                runtime_override = True
+            elif source_name and source_name != "defaults" and " profile" not in source_name:
+                config_source = source_name
+        config_data["config_provenance"] = {
+            "config_source": config_source,
+            "profile": profile_name,
+            "runtime_override": runtime_override,
+        }
+        print(json.dumps(config_data, indent=4, separators=(",", ": ")))
         return
     if file_names == ["-"]:
         file_path = Path(stream_filename) if stream_filename else None
