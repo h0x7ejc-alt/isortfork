@@ -616,6 +616,61 @@ class Config(_Config):
 
         return False
 
+    def is_skipped_with_reason(self, file_path: Path) -> tuple[bool, str]:
+        """Returns (True, reason) if the file should be skipped, or (False, '') if not."""
+        if self.directory and Path(self.directory) in file_path.resolve().parents:
+            file_name = os.path.relpath(file_path.resolve(), self.directory)
+        else:
+            file_name = str(file_path)
+
+        os_path = str(file_path)
+
+        normalized_path = os_path.replace("\\", "/")
+        if normalized_path[1:2] == ":":
+            normalized_path = normalized_path[2:]
+
+        for skip_path in self.skips:
+            if posixpath.abspath(normalized_path) == posixpath.abspath(
+                skip_path.replace("\\", "/")
+            ):
+                return (True, f"Matched skip path ({skip_path}) in skip setting.")
+
+        position = os.path.split(file_name)
+        while position[1]:
+            if position[1] in self.skips:
+                return (True, f"Matched skip component ({position[1]}) in skip setting.")
+            position = os.path.split(position[0])
+
+        for sglob in self.skip_globs:
+            if fnmatch.fnmatch(file_name, sglob) or fnmatch.fnmatch("/" + file_name, sglob):
+                return (True, f"Matched skip_glob pattern ({sglob}) in skip_glob setting.")
+
+        if not (os.path.isfile(os_path) or os.path.isdir(os_path) or os.path.islink(os_path)):
+            return (True, "File or directory does not exist.")
+
+        if self.skip_gitignore:
+            if file_path.name == ".git":  # pragma: no cover
+                return (True, "Matched .git directory (always skipped with --skip-gitignore).")
+
+            git_folder = None
+
+            file_paths = [file_path, file_path.resolve()]
+            for folder in self.git_ls_files:
+                if any(folder in path.parents for path in file_paths):
+                    git_folder = folder
+                    break
+            else:
+                git_folder = self._check_folder_git_ls_files(str(file_path.parent))
+
+            if (
+                git_folder
+                and not file_path.is_dir()
+                and str(file_path.resolve()) not in self.git_ls_files[git_folder]
+            ):
+                return (True, "Listed in .gitignore (with --skip-gitignore enabled).")
+
+        return (False, "")
+
     @property
     def known_patterns(self) -> list[tuple[Pattern[str], str]]:
         if self._known_patterns is not None:

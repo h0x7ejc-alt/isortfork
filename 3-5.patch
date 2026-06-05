@@ -1,0 +1,137 @@
+diff --git a/isort/main.py b/isort/main.py
+index 72d95b97..1dd6c02c 100644
+--- a/isort/main.py
++++ b/isort/main.py
+@@ -199,6 +199,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
+         action="store_true",
+         help="See the files isort will be run against with the current config options.",
+     )
++    general_group.add_argument(
++        "--spd",
++        "--show-path-decision",
++        dest="show_path_decision",
++        action="store_true",
++        help="Show why a file is skipped or why an import is placed in a given section. "
++        "Pass file paths to see skip decisions and import classifications, "
++        "or module names to see section placement reasoning.",
++    )
+     general_group.add_argument(
+         "--df",
+         "--diff",
+@@ -997,8 +1006,13 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+ 
+     show_config: bool = arguments.pop("show_config", False)
+     show_files: bool = arguments.pop("show_files", False)
++    show_path_decision: bool = arguments.pop("show_path_decision", False)
+     if show_config and show_files:
+         sys.exit("Error: either specify show-config or show-files not both.")
++    if show_path_decision and show_config:
++        sys.exit("Error: either specify show-path-decision or show-config not both.")
++    if show_path_decision and show_files:
++        sys.exit("Error: either specify show-path-decision or show-files not both.")
+ 
+     if "settings_path" in arguments:
+         if os.path.isfile(arguments["settings_path"]):
+@@ -1055,6 +1069,36 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+     if show_config:
+         print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
+         return
++    if show_path_decision:
++        if not file_names:
++            sys.exit("Error: --show-path-decision requires at least one file or module name.")
++        for name in file_names:
++            path = Path(name)
++            if os.path.isfile(name):
++                skipped, skip_reason = config.is_skipped_with_reason(path)
++                if skipped:
++                    print(f"{name}: skipped")
++                    print(f"  Reason: {skip_reason}")
++                else:
++                    print(f"{name}: not skipped")
++                    for identified_import in api.find_imports_in_file(name, config=config):
++                        placement, reason = api.place_module_with_reason(
++                            identified_import.module, config=config
++                        )
++                        print(f"  {identified_import.statement()} -> {placement}")
++                        print(f"    Reason: {reason}")
++            elif os.path.isdir(name):
++                skipped, skip_reason = config.is_skipped_with_reason(path)
++                if skipped:
++                    print(f"{name}: skipped")
++                    print(f"  Reason: {skip_reason}")
++                else:
++                    print(f"{name}: not skipped (directory)")
++            else:
++                placement, reason = api.place_module_with_reason(name, config=config)
++                print(f"{name} -> {placement}")
++                print(f"  Reason: {reason}")
++        return
+     if file_names == ["-"]:
+         file_path = Path(stream_filename) if stream_filename else None
+         if show_files:
+diff --git a/isort/settings.py b/isort/settings.py
+index 9c22fa5a..6a3e2a1e 100644
+--- a/isort/settings.py
++++ b/isort/settings.py
+@@ -616,6 +616,61 @@ class Config(_Config):
+ 
+         return False
+ 
++    def is_skipped_with_reason(self, file_path: Path) -> tuple[bool, str]:
++        """Returns (True, reason) if the file should be skipped, or (False, '') if not."""
++        if self.directory and Path(self.directory) in file_path.resolve().parents:
++            file_name = os.path.relpath(file_path.resolve(), self.directory)
++        else:
++            file_name = str(file_path)
++
++        os_path = str(file_path)
++
++        normalized_path = os_path.replace("\\", "/")
++        if normalized_path[1:2] == ":":
++            normalized_path = normalized_path[2:]
++
++        for skip_path in self.skips:
++            if posixpath.abspath(normalized_path) == posixpath.abspath(
++                skip_path.replace("\\", "/")
++            ):
++                return (True, f"Matched skip path ({skip_path}) in skip setting.")
++
++        position = os.path.split(file_name)
++        while position[1]:
++            if position[1] in self.skips:
++                return (True, f"Matched skip component ({position[1]}) in skip setting.")
++            position = os.path.split(position[0])
++
++        for sglob in self.skip_globs:
++            if fnmatch.fnmatch(file_name, sglob) or fnmatch.fnmatch("/" + file_name, sglob):
++                return (True, f"Matched skip_glob pattern ({sglob}) in skip_glob setting.")
++
++        if not (os.path.isfile(os_path) or os.path.isdir(os_path) or os.path.islink(os_path)):
++            return (True, "File or directory does not exist.")
++
++        if self.skip_gitignore:
++            if file_path.name == ".git":  # pragma: no cover
++                return (True, "Matched .git directory (always skipped with --skip-gitignore).")
++
++            git_folder = None
++
++            file_paths = [file_path, file_path.resolve()]
++            for folder in self.git_ls_files:
++                if any(folder in path.parents for path in file_paths):
++                    git_folder = folder
++                    break
++            else:
++                git_folder = self._check_folder_git_ls_files(str(file_path.parent))
++
++            if (
++                git_folder
++                and not file_path.is_dir()
++                and str(file_path.resolve()) not in self.git_ls_files[git_folder]
++            ):
++                return (True, "Listed in .gitignore (with --skip-gitignore enabled).")
++
++        return (False, "")
++
+     @property
+     def known_patterns(self) -> list[tuple[Pattern[str], str]]:
+         if self._known_patterns is not None:

@@ -200,6 +200,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="See the files isort will be run against with the current config options.",
     )
     general_group.add_argument(
+        "--spd",
+        "--show-path-decision",
+        dest="show_path_decision",
+        action="store_true",
+        help="Show why a file is skipped or why an import is placed in a given section. "
+        "Pass file paths to see skip decisions and import classifications, "
+        "or module names to see section placement reasoning.",
+    )
+    general_group.add_argument(
         "--df",
         "--diff",
         dest="show_diff",
@@ -997,8 +1006,13 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None) 
 
     show_config: bool = arguments.pop("show_config", False)
     show_files: bool = arguments.pop("show_files", False)
+    show_path_decision: bool = arguments.pop("show_path_decision", False)
     if show_config and show_files:
         sys.exit("Error: either specify show-config or show-files not both.")
+    if show_path_decision and show_config:
+        sys.exit("Error: either specify show-path-decision or show-config not both.")
+    if show_path_decision and show_files:
+        sys.exit("Error: either specify show-path-decision or show-files not both.")
 
     if "settings_path" in arguments:
         if os.path.isfile(arguments["settings_path"]):
@@ -1054,6 +1068,36 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None) 
     config = Config(**config_dict)
     if show_config:
         print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
+        return
+    if show_path_decision:
+        if not file_names:
+            sys.exit("Error: --show-path-decision requires at least one file or module name.")
+        for name in file_names:
+            path = Path(name)
+            if os.path.isfile(name):
+                skipped, skip_reason = config.is_skipped_with_reason(path)
+                if skipped:
+                    print(f"{name}: skipped")
+                    print(f"  Reason: {skip_reason}")
+                else:
+                    print(f"{name}: not skipped")
+                    for identified_import in api.find_imports_in_file(name, config=config):
+                        placement, reason = api.place_module_with_reason(
+                            identified_import.module, config=config
+                        )
+                        print(f"  {identified_import.statement()} -> {placement}")
+                        print(f"    Reason: {reason}")
+            elif os.path.isdir(name):
+                skipped, skip_reason = config.is_skipped_with_reason(path)
+                if skipped:
+                    print(f"{name}: skipped")
+                    print(f"  Reason: {skip_reason}")
+                else:
+                    print(f"{name}: not skipped (directory)")
+            else:
+                placement, reason = api.place_module_with_reason(name, config=config)
+                print(f"{name} -> {placement}")
+                print(f"  Reason: {reason}")
         return
     if file_names == ["-"]:
         file_path = Path(stream_filename) if stream_filename else None
