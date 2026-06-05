@@ -303,6 +303,13 @@ class Config(_Config):
             config_vars.pop("_skip_globs")
             config_vars.pop("_sorting_function")
             super().__init__(**config_vars)
+            object.__setattr__(self, "_config_source", {
+                "config_file": getattr(config, "_config_source", {}).get("config_file"),
+                "profile": getattr(config, "_config_source", {}).get("profile"),
+                "runtime_overrides": bool(config_overrides) and any(
+                    v is not None for v in config_overrides.values()
+                ),
+            })
             return
 
         # We can't use self.quiet to conditionally show warnings before super.__init__() is called
@@ -496,6 +503,17 @@ class Config(_Config):
             raise UnsupportedSettings(unsupported_config_errors)
 
         super().__init__(sources=tuple(sources), **combined_config)
+
+        _config_file = settings_file or config_settings.get("source") or None
+        _profile = profile_name or None
+        _has_runtime_overrides = bool(config_overrides) and any(
+            v is not None for v in config_overrides.values()
+        )
+        object.__setattr__(self, "_config_source", {
+            "config_file": _config_file,
+            "profile": _profile,
+            "runtime_overrides": _has_runtime_overrides,
+        })
 
     def is_supported_filetype(self, file_name: str) -> bool:
         _root, ext = os.path.splitext(file_name)
