@@ -1,5 +1,6 @@
 import pytest
 
+import isort
 import isort.literal
 from isort import exceptions
 
@@ -21,6 +22,27 @@ def test_invalid_sort_type():
 
 def test_value_assignment_assignments():
     assert isort.literal.assignment("b = 1\na = 2\n", "assignments", "py") == "a = 2\nb = 1\n"
+
+
+def test_existing_literal_sort_types():
+    assert isort.literal.assignment("x = {'b': 2, 'a': 1}\n", "dict", "py") == "x = {'a': 1, 'b': 2}\n"
+    assert isort.literal.assignment("x = ['b', 'a']\n", "list", "py") == "x = ['a', 'b']\n"
+    assert isort.literal.assignment("x = ['b', 'a', 'a']\n", "unique-list", "py") == "x = ['a', 'b']\n"
+
+
+def test_unique_value_dict_assignment():
+    once = isort.literal.assignment(
+        "x = {'b': 1, 'a': 1, 'c': 2}\n", "unique-value-dict", "py"
+    )
+
+    assert once == "x = {'a': 1, 'c': 2}\n"
+    assert isort.literal.assignment(once, "unique-value-dict", "py") == once
+
+
+def test_unique_value_dict_code_sort_comment():
+    assert isort.code("# isort: unique-value-dict\nx = {'b': 1, 'a': 1, 'c': 2}\n") == (
+        "# isort: unique-value-dict\nx = {'a': 1, 'c': 2}\n"
+    )
 
 
 def test_assignments_invalid_section():

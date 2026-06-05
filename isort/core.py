@@ -23,6 +23,7 @@ COMMENT_INDICATORS = (*DOCSTRING_INDICATORS, "'", '"', "#")
 CODE_SORT_COMMENTS = (
     "# isort: list",
     "# isort: dict",
+    "# isort: unique-value-dict",
     "# isort: set",
     "# isort: unique-list",
     "# isort: tuple",

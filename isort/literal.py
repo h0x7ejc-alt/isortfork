@@ -21,6 +21,24 @@ class ISortPrettyPrinter(PrettyPrinter):
 type_mapping: dict[str, tuple[type, Callable[[Any, ISortPrettyPrinter], str]]] = {}
 
 
+def _sorted_dict_items_by_value(value: dict[Any, Any]) -> list[tuple[Any, Any]]:
+    return sorted(value.items(), key=lambda item: item[1])
+
+
+def _unique_sorted_dict_items_by_value(value: dict[Any, Any]) -> list[tuple[Any, Any]]:
+    unique_items: list[tuple[Any, Any]] = []
+    seen_values: list[Any] = []
+
+    for item in reversed(_sorted_dict_items_by_value(value)):
+        if any(item[1] == seen_value for seen_value in seen_values):
+            continue
+        unique_items.append(item)
+        seen_values.append(item[1])
+
+    unique_items.reverse()
+    return unique_items
+
+
 def assignments(code: str) -> str:
     values = {}
     for line in code.splitlines(keepends=True):
@@ -87,7 +105,12 @@ def register_type(
 
 @register_type("dict", dict)
 def _dict(value: dict[Any, Any], printer: ISortPrettyPrinter) -> str:
-    return printer.pformat(dict(sorted(value.items(), key=lambda item: item[1])))
+    return printer.pformat(dict(_sorted_dict_items_by_value(value)))
+
+
+@register_type("unique-value-dict", dict)
+def _unique_value_dict(value: dict[Any, Any], printer: ISortPrettyPrinter) -> str:
+    return printer.pformat(dict(_unique_sorted_dict_items_by_value(value)))
 
 
 @register_type("list", list)

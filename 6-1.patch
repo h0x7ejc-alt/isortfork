@@ -1,0 +1,94 @@
+diff --git a/isort/core.py b/isort/core.py
+index 46bd77f1..e9bef02d 100644
+--- a/isort/core.py
++++ b/isort/core.py
+@@ -23,6 +23,7 @@ COMMENT_INDICATORS = (*DOCSTRING_INDICATORS, "'", '"', "#")
+ CODE_SORT_COMMENTS = (
+     "# isort: list",
+     "# isort: dict",
++    "# isort: unique-value-dict",
+     "# isort: set",
+     "# isort: unique-list",
+     "# isort: tuple",
+diff --git a/isort/literal.py b/isort/literal.py
+index 16ddcba0..49213fb0 100644
+--- a/isort/literal.py
++++ b/isort/literal.py
+@@ -21,6 +21,24 @@ class ISortPrettyPrinter(PrettyPrinter):
+ type_mapping: dict[str, tuple[type, Callable[[Any, ISortPrettyPrinter], str]]] = {}
+ 
+ 
++def _sorted_dict_items_by_value(value: dict[Any, Any]) -> list[tuple[Any, Any]]:
++    return sorted(value.items(), key=lambda item: item[1])
++
++
++def _unique_sorted_dict_items_by_value(value: dict[Any, Any]) -> list[tuple[Any, Any]]:
++    unique_items: list[tuple[Any, Any]] = []
++    seen_values: list[Any] = []
++
++    for item in reversed(_sorted_dict_items_by_value(value)):
++        if any(item[1] == seen_value for seen_value in seen_values):
++            continue
++        unique_items.append(item)
++        seen_values.append(item[1])
++
++    unique_items.reverse()
++    return unique_items
++
++
+ def assignments(code: str) -> str:
+     values = {}
+     for line in code.splitlines(keepends=True):
+@@ -87,7 +105,12 @@ def register_type(
+ 
+ @register_type("dict", dict)
+ def _dict(value: dict[Any, Any], printer: ISortPrettyPrinter) -> str:
+-    return printer.pformat(dict(sorted(value.items(), key=lambda item: item[1])))
++    return printer.pformat(dict(_sorted_dict_items_by_value(value)))
++
++
++@register_type("unique-value-dict", dict)
++def _unique_value_dict(value: dict[Any, Any], printer: ISortPrettyPrinter) -> str:
++    return printer.pformat(dict(_unique_sorted_dict_items_by_value(value)))
+ 
+ 
+ @register_type("list", list)
+diff --git a/tests/unit/test_literal.py b/tests/unit/test_literal.py
+index 8fa5761b..9e42bf24 100644
+--- a/tests/unit/test_literal.py
++++ b/tests/unit/test_literal.py
+@@ -1,5 +1,6 @@
+ import pytest
+ 
++import isort
+ import isort.literal
+ from isort import exceptions
+ 
+@@ -23,6 +24,27 @@ def test_value_assignment_assignments():
+     assert isort.literal.assignment("b = 1\na = 2\n", "assignments", "py") == "a = 2\nb = 1\n"
+ 
+ 
++def test_existing_literal_sort_types():
++    assert isort.literal.assignment("x = {'b': 2, 'a': 1}\n", "dict", "py") == "x = {'a': 1, 'b': 2}\n"
++    assert isort.literal.assignment("x = ['b', 'a']\n", "list", "py") == "x = ['a', 'b']\n"
++    assert isort.literal.assignment("x = ['b', 'a', 'a']\n", "unique-list", "py") == "x = ['a', 'b']\n"
++
++
++def test_unique_value_dict_assignment():
++    once = isort.literal.assignment(
++        "x = {'b': 1, 'a': 1, 'c': 2}\n", "unique-value-dict", "py"
++    )
++
++    assert once == "x = {'a': 1, 'c': 2}\n"
++    assert isort.literal.assignment(once, "unique-value-dict", "py") == once
++
++
++def test_unique_value_dict_code_sort_comment():
++    assert isort.code("# isort: unique-value-dict\nx = {'b': 1, 'a': 1, 'c': 2}\n") == (
++        "# isort: unique-value-dict\nx = {'a': 1, 'c': 2}\n"
++    )
++
++
+ def test_assignments_invalid_section():
+     with pytest.raises(exceptions.AssignmentsFormatMismatch):
+         isort.literal.assignment("\n\nx = 1\nx++", "assignments", "py")
