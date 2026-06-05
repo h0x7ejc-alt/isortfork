@@ -1,0 +1,134 @@
+diff --git a/isort/main.py b/isort/main.py
+index 72d95b97..db013de3 100644
+--- a/isort/main.py
++++ b/isort/main.py
+@@ -199,6 +199,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
+         action="store_true",
+         help="See the files isort will be run against with the current config options.",
+     )
++    general_group.add_argument(
++        "--show-path-decision",
++        "--show-decision",
++        dest="show_decision",
++        action="store_true",
++        help="Explain why a given file is skipped or why a given import is placed in a specific section.",
++    )
+     general_group.add_argument(
+         "--df",
+         "--diff",
+@@ -960,6 +967,7 @@ def identify_imports_main(
+     arguments = parser.parse_args(argv)
+ 
+     file_names = arguments.files
++
+     if file_names == ["-"]:
+         identified_imports = api.find_imports_in_stream(
+             sys.stdin if stdin is None else stdin,
+@@ -997,6 +1005,7 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+ 
+     show_config: bool = arguments.pop("show_config", False)
+     show_files: bool = arguments.pop("show_files", False)
++    show_decision: bool = arguments.pop("show_decision", False)
+     if show_config and show_files:
+         sys.exit("Error: either specify show-config or show-files not both.")
+ 
+@@ -1014,7 +1023,7 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+             warn(f"virtual_env dir does not exist: {arguments['virtual_env']}", stacklevel=2)
+ 
+     file_names = arguments.pop("files", [])
+-    if not file_names and not show_config:
++    if not file_names and not show_config and not show_decision:
+         print(QUICK_GUIDE)
+         if arguments:
+             sys.exit("Error: arguments passed in without any paths or content.")
+@@ -1055,6 +1064,29 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None)
+     if show_config:
+         print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
+         return
++
++    if show_decision:
++        if not file_names:
++            sys.exit("Error: --show-path-decision requires at least one file or module name.")
++            
++        from . import place
++
++        for item in file_names:
++            is_file = os.path.exists(item) or os.sep in item or "/" in item or item.endswith(".py")
++            is_module = not os.sep in item and not "/" in item and not item.endswith(".py")
++
++            if is_file:
++                is_skipped, reason = config.is_skipped_with_reason(Path(item))
++                if is_skipped:
++                    print(f"File {item} is skipped. Reason: {reason}")
++                else:
++                    print(f"File {item} is NOT skipped.")
++
++            if is_module:
++                placement, reason = place.module_with_reason(item, config)
++                print(f"Module {item} is placed in {placement}. Reason: {reason}")
++        return
++
+     if file_names == ["-"]:
+         file_path = Path(stream_filename) if stream_filename else None
+         if show_files:
+diff --git a/isort/settings.py b/isort/settings.py
+index 9c22fa5a..b9479fe5 100644
+--- a/isort/settings.py
++++ b/isort/settings.py
+@@ -559,8 +559,8 @@ class Config(_Config):
+         }
+         return git_folder
+ 
+-    def is_skipped(self, file_path: Path) -> bool:
+-        """Returns True if the file and/or folder should be skipped based on current settings."""
++    def is_skipped_with_reason(self, file_path: Path) -> tuple[bool, str]:
++        """Returns (True, reason) if the file and/or folder should be skipped based on current settings."""
+         if self.directory and Path(self.directory) in file_path.resolve().parents:
+             file_name = os.path.relpath(file_path.resolve(), self.directory)
+         else:
+@@ -576,24 +576,24 @@ class Config(_Config):
+             if posixpath.abspath(normalized_path) == posixpath.abspath(
+                 skip_path.replace("\\", "/")
+             ):
+-                return True
++                return True, f"Matched skip path: {skip_path}"
+ 
+         position = os.path.split(file_name)
+         while position[1]:
+             if position[1] in self.skips:
+-                return True
++                return True, f"Matched skip path in parent directory: {position[1]}"
+             position = os.path.split(position[0])
+ 
+         for sglob in self.skip_globs:
+             if fnmatch.fnmatch(file_name, sglob) or fnmatch.fnmatch("/" + file_name, sglob):
+-                return True
++                return True, f"Matched skip glob: {sglob}"
+ 
+         if not (os.path.isfile(os_path) or os.path.isdir(os_path) or os.path.islink(os_path)):
+-            return True
++            return True, "Path does not exist or is not a file/directory/symlink"
+ 
+         if self.skip_gitignore:
+             if file_path.name == ".git":  # pragma: no cover
+-                return True
++                return True, "Is .git directory"
+ 
+             git_folder = None
+ 
+@@ -612,9 +612,13 @@ class Config(_Config):
+                 and not file_path.is_dir()
+                 and str(file_path.resolve()) not in self.git_ls_files[git_folder]
+             ):
+-                return True
++                return True, "Ignored by gitignore"
+ 
+-        return False
++        return False, ""
++
++    def is_skipped(self, file_path: Path) -> bool:
++        """Returns True if the file and/or folder should be skipped based on current settings."""
++        return self.is_skipped_with_reason(file_path)[0]
+ 
+     @property
+     def known_patterns(self) -> list[tuple[Pattern[str], str]]:

@@ -200,6 +200,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="See the files isort will be run against with the current config options.",
     )
     general_group.add_argument(
+        "--show-path-decision",
+        "--show-decision",
+        dest="show_decision",
+        action="store_true",
+        help="Explain why a given file is skipped or why a given import is placed in a specific section.",
+    )
+    general_group.add_argument(
         "--df",
         "--diff",
         dest="show_diff",
@@ -960,6 +967,7 @@ def identify_imports_main(
     arguments = parser.parse_args(argv)
 
     file_names = arguments.files
+
     if file_names == ["-"]:
         identified_imports = api.find_imports_in_stream(
             sys.stdin if stdin is None else stdin,
@@ -997,6 +1005,7 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None) 
 
     show_config: bool = arguments.pop("show_config", False)
     show_files: bool = arguments.pop("show_files", False)
+    show_decision: bool = arguments.pop("show_decision", False)
     if show_config and show_files:
         sys.exit("Error: either specify show-config or show-files not both.")
 
@@ -1014,7 +1023,7 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None) 
             warn(f"virtual_env dir does not exist: {arguments['virtual_env']}", stacklevel=2)
 
     file_names = arguments.pop("files", [])
-    if not file_names and not show_config:
+    if not file_names and not show_config and not show_decision:
         print(QUICK_GUIDE)
         if arguments:
             sys.exit("Error: arguments passed in without any paths or content.")
@@ -1055,6 +1064,29 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None) 
     if show_config:
         print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
         return
+
+    if show_decision:
+        if not file_names:
+            sys.exit("Error: --show-path-decision requires at least one file or module name.")
+            
+        from . import place
+
+        for item in file_names:
+            is_file = os.path.exists(item) or os.sep in item or "/" in item or item.endswith(".py")
+            is_module = not os.sep in item and not "/" in item and not item.endswith(".py")
+
+            if is_file:
+                is_skipped, reason = config.is_skipped_with_reason(Path(item))
+                if is_skipped:
+                    print(f"File {item} is skipped. Reason: {reason}")
+                else:
+                    print(f"File {item} is NOT skipped.")
+
+            if is_module:
+                placement, reason = place.module_with_reason(item, config)
+                print(f"Module {item} is placed in {placement}. Reason: {reason}")
+        return
+
     if file_names == ["-"]:
         file_path = Path(stream_filename) if stream_filename else None
         if show_files:
