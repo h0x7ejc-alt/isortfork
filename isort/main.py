@@ -1053,7 +1053,44 @@ def main(argv: Sequence[str] | None = None, stdin: TextIOWrapper | None = None) 
 
     config = Config(**config_dict)
     if show_config:
-        print(json.dumps(config.__dict__, indent=4, separators=(",", ": "), default=_preconvert))
+        # 复制配置字典用于输出
+        output_dict = config.__dict__.copy()
+        
+        # 添加配置源信息
+        config_source_info = {}
+        
+        # 查找配置文件路径
+        config_file = None
+        for source in config.sources:
+            source_path = source.get("source", "")
+            if source_path and source_path not in ("defaults", "runtime") and not source_path.endswith("profile"):
+                config_file = source_path
+                break
+        if config_file:
+            config_source_info["config_file"] = config_file
+        
+        # 查找 profile
+        profile_name = None
+        for source in config.sources:
+            source_path = source.get("source", "")
+            if source_path and source_path.endswith("profile"):
+                profile_name = source_path.replace(" profile", "")
+                break
+        if profile_name:
+            config_source_info["profile"] = profile_name
+        
+        # 检查是否有 runtime 覆盖
+        has_runtime_override = False
+        for source in config.sources:
+            if source.get("source") == "runtime":
+                has_runtime_override = True
+                break
+        config_source_info["has_runtime_override"] = has_runtime_override
+        
+        # 添加到输出字典
+        output_dict["config_source"] = config_source_info
+        
+        print(json.dumps(output_dict, indent=4, separators=(",", ": "), default=_preconvert))
         return
     if file_names == ["-"]:
         file_path = Path(stream_filename) if stream_filename else None
