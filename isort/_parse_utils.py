@@ -7,6 +7,164 @@ from typing import Literal, NamedTuple
 from .settings import Config
 
 
+class StatementParts(NamedTuple):
+    statements: list[str]
+
+
+def split_statements(line: str, end_of_line_comment: str | None = None) -> StatementParts:
+    """Split a line into individual statements, handling semicolons and comments.
+
+    Returns a list of statements where the last statement includes any
+    end-of-line comment that was present.
+    """
+    statements = [stmt.strip() for stmt in line.split(";")]
+    if end_of_line_comment is not None:
+        statements[-1] = f"{statements[-1]}#{end_of_line_comment}"
+    return StatementParts(statements=statements)
+
+
+class StripSyntaxResult(NamedTuple):
+    just_imports: list[str]
+
+
+def extract_import_names(import_string: str) -> StripSyntaxResult:
+    """Extract import module/attribute names from an import string.
+
+    Uses strip_syntax to remove Python syntax characters, then splits
+    into individual import name tokens. Handles the {|/|} placeholder
+    conversion for curly braces.
+    """
+    just_imports = [
+        item.replace("{|", "{ ").replace("|}", " }")
+        for item in strip_syntax(import_string).split()
+    ]
+    return StripSyntaxResult(just_imports=just_imports)
+
+
+class AliasInfo(NamedTuple):
+    module: str
+    attribute: str | None
+    alias: str
+    is_from_import: bool
+
+
+class AliasParseResult(NamedTuple):
+    aliases: list[AliasInfo]
+    remaining_imports: list[str]
+    top_level_module: str
+
+
+def parse_aliases(
+    just_imports: list[str],
+    type_of_import: str,
+) -> AliasParseResult:
+    """Parse 'as' aliases from a list of import names.
+
+    Returns the list of aliases found, the remaining import names
+    (with aliases removed), and the top-level module for from-imports.
+    """
+    aliases: list[AliasInfo] = []
+    remaining = list(just_imports)
+    top_level_module = ""
+
+    while "as" in remaining and (remaining.index("as") + 1) < len(remaining):
+        as_index = remaining.index("as")
+        if type_of_import == "from":
+            attribute = remaining[as_index - 1]
+            top_level_module = remaining[0]
+            alias = remaining[as_index + 1]
+            remaining.remove(attribute)
+            remaining.remove(alias)
+            remaining.remove("as")
+            aliases.append(AliasInfo(
+                module=top_level_module,
+                attribute=attribute,
+                alias=alias,
+                is_from_import=True,
+            ))
+        else:
+            module = remaining[as_index - 1]
+            alias = remaining[as_index + 1]
+            remaining.remove(alias)
+            remaining.remove("as")
+            remaining.remove(module)
+            aliases.append(AliasInfo(
+                module=module,
+                attribute=None,
+                alias=alias,
+                is_from_import=False,
+            ))
+
+    return AliasParseResult(
+        aliases=aliases,
+        remaining_imports=remaining,
+        top_level_module=top_level_module,
+    )
+
+
+class AliasInfoWithModule(AliasInfo):
+    """AliasInfo that includes the full dotted module name."""
+
+
+class AliasParseResultWithModule(NamedTuple):
+    aliases: list[AliasInfoWithModule]
+    remaining_imports: list[str]
+    top_level_module: str
+
+
+def parse_aliases_with_full_module(
+    just_imports: list[str],
+    type_of_import: str,
+) -> AliasParseResultWithModule:
+    """Parse 'as' aliases, returning full dotted module names for from-imports.
+
+    This variant is used by parse.py which needs the full module path
+    (e.g., 'os.path' instead of just 'os') for comment tracking.
+    """
+    aliases: list[AliasInfoWithModule] = []
+    remaining = list(just_imports)
+    top_level_module = ""
+
+    while "as" in remaining and (remaining.index("as") + 1) < len(remaining):
+        as_index = remaining.index("as")
+        if type_of_import == "from":
+            attribute = remaining[as_index - 1]
+            top_level_module = remaining[0]
+            alias = remaining[as_index + 1]
+            remaining.remove(attribute)
+            remaining.remove(alias)
+            remaining.remove("as")
+            aliases.append(AliasInfoWithModule(
+                module=top_level_module + "." + attribute,
+                attribute=attribute,
+                alias=alias,
+                is_from_import=True,
+            ))
+        else:
+            module = remaining[as_index - 1]
+            alias = remaining[as_index + 1]
+            remaining.remove(alias)
+            remaining.remove("as")
+            remaining.remove(module)
+            aliases.append(AliasInfoWithModule(
+                module=module,
+                attribute=None,
+                alias=alias,
+                is_from_import=False,
+            ))
+
+    return AliasParseResultWithModule(
+        aliases=aliases,
+        remaining_imports=remaining,
+        top_level_module=top_level_module,
+    )
+
+
+def is_cimport(import_string: str) -> bool:
+    """Check if an import string uses cimport syntax."""
+    return " cimport " in import_string or import_string.startswith("cimport")
+
+
 class NormalizeLineResult(NamedTuple):
     normalized_line: str
     raw_line: str

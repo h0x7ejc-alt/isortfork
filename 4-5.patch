@@ -1,0 +1,360 @@
+diff --git a/isort/_parse_utils.py b/isort/_parse_utils.py
+index a3c13ed8..ee69fcad 100644
+--- a/isort/_parse_utils.py
++++ b/isort/_parse_utils.py
+@@ -7,6 +7,164 @@ from typing import Literal, NamedTuple
+ from .settings import Config
+ 
+ 
++class StatementParts(NamedTuple):
++    statements: list[str]
++
++
++def split_statements(line: str, end_of_line_comment: str | None = None) -> StatementParts:
++    """Split a line into individual statements, handling semicolons and comments.
++
++    Returns a list of statements where the last statement includes any
++    end-of-line comment that was present.
++    """
++    statements = [stmt.strip() for stmt in line.split(";")]
++    if end_of_line_comment is not None:
++        statements[-1] = f"{statements[-1]}#{end_of_line_comment}"
++    return StatementParts(statements=statements)
++
++
++class StripSyntaxResult(NamedTuple):
++    just_imports: list[str]
++
++
++def extract_import_names(import_string: str) -> StripSyntaxResult:
++    """Extract import module/attribute names from an import string.
++
++    Uses strip_syntax to remove Python syntax characters, then splits
++    into individual import name tokens. Handles the {|/|} placeholder
++    conversion for curly braces.
++    """
++    just_imports = [
++        item.replace("{|", "{ ").replace("|}", " }")
++        for item in strip_syntax(import_string).split()
++    ]
++    return StripSyntaxResult(just_imports=just_imports)
++
++
++class AliasInfo(NamedTuple):
++    module: str
++    attribute: str | None
++    alias: str
++    is_from_import: bool
++
++
++class AliasParseResult(NamedTuple):
++    aliases: list[AliasInfo]
++    remaining_imports: list[str]
++    top_level_module: str
++
++
++def parse_aliases(
++    just_imports: list[str],
++    type_of_import: str,
++) -> AliasParseResult:
++    """Parse 'as' aliases from a list of import names.
++
++    Returns the list of aliases found, the remaining import names
++    (with aliases removed), and the top-level module for from-imports.
++    """
++    aliases: list[AliasInfo] = []
++    remaining = list(just_imports)
++    top_level_module = ""
++
++    while "as" in remaining and (remaining.index("as") + 1) < len(remaining):
++        as_index = remaining.index("as")
++        if type_of_import == "from":
++            attribute = remaining[as_index - 1]
++            top_level_module = remaining[0]
++            alias = remaining[as_index + 1]
++            remaining.remove(attribute)
++            remaining.remove(alias)
++            remaining.remove("as")
++            aliases.append(AliasInfo(
++                module=top_level_module,
++                attribute=attribute,
++                alias=alias,
++                is_from_import=True,
++            ))
++        else:
++            module = remaining[as_index - 1]
++            alias = remaining[as_index + 1]
++            remaining.remove(alias)
++            remaining.remove("as")
++            remaining.remove(module)
++            aliases.append(AliasInfo(
++                module=module,
++                attribute=None,
++                alias=alias,
++                is_from_import=False,
++            ))
++
++    return AliasParseResult(
++        aliases=aliases,
++        remaining_imports=remaining,
++        top_level_module=top_level_module,
++    )
++
++
++class AliasInfoWithModule(AliasInfo):
++    """AliasInfo that includes the full dotted module name."""
++
++
++class AliasParseResultWithModule(NamedTuple):
++    aliases: list[AliasInfoWithModule]
++    remaining_imports: list[str]
++    top_level_module: str
++
++
++def parse_aliases_with_full_module(
++    just_imports: list[str],
++    type_of_import: str,
++) -> AliasParseResultWithModule:
++    """Parse 'as' aliases, returning full dotted module names for from-imports.
++
++    This variant is used by parse.py which needs the full module path
++    (e.g., 'os.path' instead of just 'os') for comment tracking.
++    """
++    aliases: list[AliasInfoWithModule] = []
++    remaining = list(just_imports)
++    top_level_module = ""
++
++    while "as" in remaining and (remaining.index("as") + 1) < len(remaining):
++        as_index = remaining.index("as")
++        if type_of_import == "from":
++            attribute = remaining[as_index - 1]
++            top_level_module = remaining[0]
++            alias = remaining[as_index + 1]
++            remaining.remove(attribute)
++            remaining.remove(alias)
++            remaining.remove("as")
++            aliases.append(AliasInfoWithModule(
++                module=top_level_module + "." + attribute,
++                attribute=attribute,
++                alias=alias,
++                is_from_import=True,
++            ))
++        else:
++            module = remaining[as_index - 1]
++            alias = remaining[as_index + 1]
++            remaining.remove(alias)
++            remaining.remove("as")
++            remaining.remove(module)
++            aliases.append(AliasInfoWithModule(
++                module=module,
++                attribute=None,
++                alias=alias,
++                is_from_import=False,
++            ))
++
++    return AliasParseResultWithModule(
++        aliases=aliases,
++        remaining_imports=remaining,
++        top_level_module=top_level_module,
++    )
++
++
++def is_cimport(import_string: str) -> bool:
++    """Check if an import string uses cimport syntax."""
++    return " cimport " in import_string or import_string.startswith("cimport")
++
++
+ class NormalizeLineResult(NamedTuple):
+     normalized_line: str
+     raw_line: str
+diff --git a/isort/identify.py b/isort/identify.py
+index 08a640e7..3b70427d 100644
+--- a/isort/identify.py
++++ b/isort/identify.py
+@@ -9,11 +9,14 @@ from typing import NamedTuple, TextIO
+ 
+ from ._parse_utils import (
+     collect_import_continuation,
++    extract_import_names,
+     import_type,
++    is_cimport,
+     normalize_from_import_string,
+     normalize_line,
++    parse_aliases,
+     skip_line,
+-    strip_syntax,
++    split_statements,
+ )
+ from .comments import parse as parse_comments
+ from .settings import DEFAULT_CONFIG, Config
+@@ -87,9 +90,9 @@ def imports(
+             continue  # pragma: no cover
+ 
+         line, *end_of_line_comment = raw_line.split("#", 1)
+-        statements = [line.strip() for line in line.split(";")]
+-        if end_of_line_comment:
+-            statements[-1] = f"{statements[-1]}#{end_of_line_comment[0]}"
++        statements = split_statements(
++            line, end_of_line_comment[0] if end_of_line_comment else None
++        ).statements
+ 
+         for statement in statements:
+             line, _raw_line = normalize_line(statement)
+@@ -116,45 +119,30 @@ def imports(
+             if type_of_import == "from":
+                 import_string = normalize_from_import_string(import_string)
+ 
+-            cimports: bool = " cimport " in import_string or import_string.startswith("cimport")
++            cimports: bool = is_cimport(import_string)
+ 
+             identified_import = partial(identified_import, cimport=cimports)
+ 
+-            just_imports = [
+-                item.replace("{|", "{ ").replace("|}", " }")
+-                for item in strip_syntax(import_string).split()
+-            ]
++            import_names_result = extract_import_names(import_string)
++            just_imports = import_names_result.just_imports
+ 
+             direct_imports = just_imports[1:]
+             top_level_module = ""
+             if "as" in just_imports and (just_imports.index("as") + 1) < len(just_imports):
+-                while "as" in just_imports:
+-                    attribute = None
+-                    as_index = just_imports.index("as")
+-                    if type_of_import == "from":
+-                        attribute = just_imports[as_index - 1]
+-                        top_level_module = just_imports[0]
+-                        module = top_level_module + "." + attribute
+-                        alias = just_imports[as_index + 1]
+-                        direct_imports.remove(attribute)
+-                        direct_imports.remove(alias)
+-                        direct_imports.remove("as")
+-                        just_imports[1:] = direct_imports
+-                        if attribute == alias and config.remove_redundant_aliases:
+-                            yield identified_import(top_level_module, attribute)
++                alias_result = parse_aliases(just_imports, type_of_import)
++                top_level_module = alias_result.top_level_module
++                for alias_info in alias_result.aliases:
++                    if alias_info.is_from_import:
++                        if alias_info.attribute == alias_info.alias and config.remove_redundant_aliases:
++                            yield identified_import(alias_info.module, alias_info.attribute)
+                         else:
+-                            yield identified_import(top_level_module, attribute, alias=alias)
+-
++                            yield identified_import(alias_info.module, alias_info.attribute, alias=alias_info.alias)
+                     else:
+-                        module = just_imports[as_index - 1]
+-                        alias = just_imports[as_index + 1]
+-                        just_imports.remove(alias)
+-                        just_imports.remove("as")
+-                        just_imports.remove(module)
+-                        if module == alias and config.remove_redundant_aliases:
+-                            yield identified_import(module)
++                        if alias_info.module == alias_info.alias and config.remove_redundant_aliases:
++                            yield identified_import(alias_info.module)
+                         else:
+-                            yield identified_import(module, alias=alias)
++                            yield identified_import(alias_info.module, alias=alias_info.alias)
++                just_imports = alias_result.remaining_imports
+ 
+             if just_imports:
+                 if type_of_import == "from":
+diff --git a/isort/parse.py b/isort/parse.py
+index 03678397..1a258e34 100644
+--- a/isort/parse.py
++++ b/isort/parse.py
+@@ -9,10 +9,14 @@ from warnings import warn
+ from . import place
+ from ._parse_utils import (
+     collect_import_continuation,
++    extract_import_names,
+     import_type,
++    is_cimport,
+     normalize_from_import_string,
+     normalize_line,
++    parse_aliases_with_full_module,
+     skip_line,
++    split_statements,
+     strip_syntax,
+ )
+ from .comments import parse as parse_comments
+@@ -186,12 +190,9 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
+                         starting_line = in_lines[import_index]
+ 
+         line, *end_of_line_comment = line.split("#", 1)
+-        if ";" in line:
+-            statements = [line.strip() for line in line.split(";")]
+-        else:
+-            statements = [line]
+-        if end_of_line_comment:
+-            statements[-1] = f"{statements[-1]}#{end_of_line_comment[0]}"
++        statements = split_statements(
++            line, end_of_line_comment[0] if end_of_line_comment else None
++        ).statements
+ 
+         for statement in statements:
+             line, raw_line = normalize_line(statement)
+@@ -249,10 +250,8 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
+                     out_lines.extend(raw_lines)
+                     continue
+ 
+-            just_imports = [
+-                item.replace("{|", "{ ").replace("|}", " }")
+-                for item in strip_syntax(import_string).split()
+-            ]
++            import_names_result = extract_import_names(import_string)
++            just_imports = import_names_result.just_imports
+ 
+             attach_comments_to: list[str] | None = None
+             direct_imports = just_imports[1:]
+@@ -260,14 +259,13 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
+             top_level_module = ""
+             if "as" in just_imports and (just_imports.index("as") + 1) < len(just_imports):
+                 straight_import = False
+-                while "as" in just_imports:
+-                    nested_module = None
+-                    as_index = just_imports.index("as")
+-                    if type_of_import == "from":
+-                        nested_module = just_imports[as_index - 1]
+-                        top_level_module = just_imports[0]
+-                        module = top_level_module + "." + nested_module
+-                        as_name = just_imports[as_index + 1]
++                alias_result = parse_aliases_with_full_module(just_imports, type_of_import)
++                top_level_module = alias_result.top_level_module
++                for alias_info in alias_result.aliases:
++                    if alias_info.is_from_import:
++                        nested_module = alias_info.attribute
++                        module = alias_info.module
++                        as_name = alias_info.alias
+                         direct_imports.remove(nested_module)
+                         direct_imports.remove(as_name)
+                         direct_imports.remove("as")
+@@ -285,15 +283,15 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
+                             if associated_comment in comments:  # pragma: no branch
+                                 comments.pop(comments.index(associated_comment))
+                     else:
+-                        module = just_imports[as_index - 1]
+-                        as_name = just_imports[as_index + 1]
++                        module = alias_info.module
++                        as_name = alias_info.alias
+                         if module == as_name and config.remove_redundant_aliases:
+                             pass
+                         elif as_name not in as_map["straight"][module]:
+                             as_map["straight"][module].append(as_name)
+ 
+                     if comments and attach_comments_to is None:
+-                        if nested_module and config.combine_as_imports:
++                        if alias_info.is_from_import and alias_info.attribute and config.combine_as_imports:
+                             attach_comments_to = categorized_comments["from"].setdefault(
+                                 f"{top_level_module}.__combined_as__", []
+                             )
+@@ -308,7 +306,7 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
+                                 attach_comments_to = categorized_comments["straight"].setdefault(
+                                     f"{module} as {as_name}", []
+                                 )
+-                    del just_imports[as_index : as_index + 2]
++                just_imports = alias_result.remaining_imports
+ 
+             if type_of_import == "from":
+                 import_from = just_imports.pop(0)

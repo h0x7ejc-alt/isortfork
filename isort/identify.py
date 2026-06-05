@@ -9,11 +9,14 @@ from typing import NamedTuple, TextIO
 
 from ._parse_utils import (
     collect_import_continuation,
+    extract_import_names,
     import_type,
+    is_cimport,
     normalize_from_import_string,
     normalize_line,
+    parse_aliases,
     skip_line,
-    strip_syntax,
+    split_statements,
 )
 from .comments import parse as parse_comments
 from .settings import DEFAULT_CONFIG, Config
@@ -87,9 +90,9 @@ def imports(
             continue  # pragma: no cover
 
         line, *end_of_line_comment = raw_line.split("#", 1)
-        statements = [line.strip() for line in line.split(";")]
-        if end_of_line_comment:
-            statements[-1] = f"{statements[-1]}#{end_of_line_comment[0]}"
+        statements = split_statements(
+            line, end_of_line_comment[0] if end_of_line_comment else None
+        ).statements
 
         for statement in statements:
             line, _raw_line = normalize_line(statement)
@@ -116,45 +119,30 @@ def imports(
             if type_of_import == "from":
                 import_string = normalize_from_import_string(import_string)
 
-            cimports: bool = " cimport " in import_string or import_string.startswith("cimport")
+            cimports: bool = is_cimport(import_string)
 
             identified_import = partial(identified_import, cimport=cimports)
 
-            just_imports = [
-                item.replace("{|", "{ ").replace("|}", " }")
-                for item in strip_syntax(import_string).split()
-            ]
+            import_names_result = extract_import_names(import_string)
+            just_imports = import_names_result.just_imports
 
             direct_imports = just_imports[1:]
             top_level_module = ""
             if "as" in just_imports and (just_imports.index("as") + 1) < len(just_imports):
-                while "as" in just_imports:
-                    attribute = None
-                    as_index = just_imports.index("as")
-                    if type_of_import == "from":
-                        attribute = just_imports[as_index - 1]
-                        top_level_module = just_imports[0]
-                        module = top_level_module + "." + attribute
-                        alias = just_imports[as_index + 1]
-                        direct_imports.remove(attribute)
-                        direct_imports.remove(alias)
-                        direct_imports.remove("as")
-                        just_imports[1:] = direct_imports
-                        if attribute == alias and config.remove_redundant_aliases:
-                            yield identified_import(top_level_module, attribute)
+                alias_result = parse_aliases(just_imports, type_of_import)
+                top_level_module = alias_result.top_level_module
+                for alias_info in alias_result.aliases:
+                    if alias_info.is_from_import:
+                        if alias_info.attribute == alias_info.alias and config.remove_redundant_aliases:
+                            yield identified_import(alias_info.module, alias_info.attribute)
                         else:
-                            yield identified_import(top_level_module, attribute, alias=alias)
-
+                            yield identified_import(alias_info.module, alias_info.attribute, alias=alias_info.alias)
                     else:
-                        module = just_imports[as_index - 1]
-                        alias = just_imports[as_index + 1]
-                        just_imports.remove(alias)
-                        just_imports.remove("as")
-                        just_imports.remove(module)
-                        if module == alias and config.remove_redundant_aliases:
-                            yield identified_import(module)
+                        if alias_info.module == alias_info.alias and config.remove_redundant_aliases:
+                            yield identified_import(alias_info.module)
                         else:
-                            yield identified_import(module, alias=alias)
+                            yield identified_import(alias_info.module, alias=alias_info.alias)
+                just_imports = alias_result.remaining_imports
 
             if just_imports:
                 if type_of_import == "from":

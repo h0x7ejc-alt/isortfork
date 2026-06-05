@@ -9,10 +9,14 @@ from warnings import warn
 from . import place
 from ._parse_utils import (
     collect_import_continuation,
+    extract_import_names,
     import_type,
+    is_cimport,
     normalize_from_import_string,
     normalize_line,
+    parse_aliases_with_full_module,
     skip_line,
+    split_statements,
     strip_syntax,
 )
 from .comments import parse as parse_comments
@@ -186,12 +190,9 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
                         starting_line = in_lines[import_index]
 
         line, *end_of_line_comment = line.split("#", 1)
-        if ";" in line:
-            statements = [line.strip() for line in line.split(";")]
-        else:
-            statements = [line]
-        if end_of_line_comment:
-            statements[-1] = f"{statements[-1]}#{end_of_line_comment[0]}"
+        statements = split_statements(
+            line, end_of_line_comment[0] if end_of_line_comment else None
+        ).statements
 
         for statement in statements:
             line, raw_line = normalize_line(statement)
@@ -249,10 +250,8 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
                     out_lines.extend(raw_lines)
                     continue
 
-            just_imports = [
-                item.replace("{|", "{ ").replace("|}", " }")
-                for item in strip_syntax(import_string).split()
-            ]
+            import_names_result = extract_import_names(import_string)
+            just_imports = import_names_result.just_imports
 
             attach_comments_to: list[str] | None = None
             direct_imports = just_imports[1:]
@@ -260,14 +259,13 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
             top_level_module = ""
             if "as" in just_imports and (just_imports.index("as") + 1) < len(just_imports):
                 straight_import = False
-                while "as" in just_imports:
-                    nested_module = None
-                    as_index = just_imports.index("as")
-                    if type_of_import == "from":
-                        nested_module = just_imports[as_index - 1]
-                        top_level_module = just_imports[0]
-                        module = top_level_module + "." + nested_module
-                        as_name = just_imports[as_index + 1]
+                alias_result = parse_aliases_with_full_module(just_imports, type_of_import)
+                top_level_module = alias_result.top_level_module
+                for alias_info in alias_result.aliases:
+                    if alias_info.is_from_import:
+                        nested_module = alias_info.attribute
+                        module = alias_info.module
+                        as_name = alias_info.alias
                         direct_imports.remove(nested_module)
                         direct_imports.remove(as_name)
                         direct_imports.remove("as")
@@ -285,15 +283,15 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
                             if associated_comment in comments:  # pragma: no branch
                                 comments.pop(comments.index(associated_comment))
                     else:
-                        module = just_imports[as_index - 1]
-                        as_name = just_imports[as_index + 1]
+                        module = alias_info.module
+                        as_name = alias_info.alias
                         if module == as_name and config.remove_redundant_aliases:
                             pass
                         elif as_name not in as_map["straight"][module]:
                             as_map["straight"][module].append(as_name)
 
                     if comments and attach_comments_to is None:
-                        if nested_module and config.combine_as_imports:
+                        if alias_info.is_from_import and alias_info.attribute and config.combine_as_imports:
                             attach_comments_to = categorized_comments["from"].setdefault(
                                 f"{top_level_module}.__combined_as__", []
                             )
@@ -308,7 +306,7 @@ def file_contents(contents: str, config: Config = DEFAULT_CONFIG) -> ParsedConte
                                 attach_comments_to = categorized_comments["straight"].setdefault(
                                     f"{module} as {as_name}", []
                                 )
-                    del just_imports[as_index : as_index + 2]
+                just_imports = alias_result.remaining_imports
 
             if type_of_import == "from":
                 import_from = just_imports.pop(0)
