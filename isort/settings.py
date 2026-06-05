@@ -278,6 +278,94 @@ _DEFAULT_SETTINGS = {**vars(_Config()), "source": "defaults"}
 
 
 class Config(_Config):
+    @classmethod
+    def _determine_config_settings(
+        cls, settings_file: str, settings_path: str, quiet: bool
+    ) -> tuple[str, dict[str, Any]]:
+        config_settings: dict[str, Any]
+        project_root: str
+        if settings_file:
+            config_settings = _get_config_data(
+                settings_file,
+                CONFIG_SECTIONS.get(os.path.basename(settings_file), FALLBACK_CONFIG_SECTIONS),
+            )
+            project_root = os.path.dirname(settings_file)
+            if not config_settings and not quiet:
+                warn(
+                    f"A custom settings file was specified: {settings_file} but no configuration "
+                    "was found inside. This can happen when [settings] is used as the config "
+                    "header instead of [isort]. "
+                    "See: https://isort.readthedocs.io/en/latest/configuration/config_files.html"
+                    "#custom-config-files for more information.",
+                    stacklevel=2,
+                )
+        elif settings_path:
+            if not os.path.exists(settings_path):
+                raise InvalidSettingsPath(settings_path)
+
+            settings_path = os.path.abspath(settings_path)
+            project_root, config_settings = _find_config(settings_path)
+        else:
+            config_settings = {}
+            project_root = os.getcwd()
+
+        return project_root, config_settings
+
+    @classmethod
+    def _get_profile(cls, profile_name: str) -> dict[str, Any]:
+        profile: dict[str, Any] = {}
+        if profile_name:
+            if profile_name not in profiles:
+                for plugin in entry_points(group="isort.profiles"):
+                    profiles.setdefault(plugin.name, plugin.load())
+
+            if profile_name not in profiles:
+                raise ProfileDoesNotExist(profile_name)
+
+            profile = profiles[profile_name].copy()
+            profile["source"] = f"{profile_name} profile"
+        return profile
+
+    @classmethod
+    def _expand_src_paths(cls, combined_config: dict[str, Any], project_root: str) -> tuple[Path, ...]:
+        path_root = Path(combined_config.get("directory", project_root)).resolve()
+        path_root = path_root if path_root.is_dir() else path_root.parent
+        if "src_paths" not in combined_config:
+            return (path_root / "src", path_root)
+
+        src_paths: list[Path] = []
+        for src_path in combined_config.get("src_paths", ()):
+            full_paths = (
+                path_root.glob(src_path) if "*" in str(src_path) else [path_root / src_path]
+            )
+            for path in full_paths:
+                if path not in src_paths:
+                    src_paths.append(path)
+
+        return tuple(src_paths)
+
+    @classmethod
+    def _parse_formatter(cls, formatter: str) -> Callable[[str, str, object], str]:
+        for plugin in entry_points(group="isort.formatters"):
+            if plugin.name == formatter:
+                return plugin.load()
+        raise FormattingPluginDoesNotExist(formatter)
+
+    @classmethod
+    def _check_unsupported_config(cls, combined_config: dict[str, Any], sources: tuple[dict[str, Any], ...]) -> None:
+        unsupported_config_errors = {}
+        for option in set(combined_config.keys()).difference(
+            getattr(_Config, "__dataclass_fields__", {}).keys()
+        ):
+            for source in reversed(sources):
+                if option in source:
+                    unsupported_config_errors[option] = {
+                        "value": source[option],
+                        "source": source["source"],
+                    }
+        if unsupported_config_errors:
+            raise UnsupportedSettings(unsupported_config_errors)
+
     def __init__(
         self,
         settings_file: str = "",
@@ -312,45 +400,11 @@ class Config(_Config):
 
         sources: list[dict[str, Any]] = [_DEFAULT_SETTINGS]
 
-        config_settings: dict[str, Any]
-        project_root: str
-        if settings_file:
-            config_settings = _get_config_data(
-                settings_file,
-                CONFIG_SECTIONS.get(os.path.basename(settings_file), FALLBACK_CONFIG_SECTIONS),
-            )
-            project_root = os.path.dirname(settings_file)
-            if not config_settings and not quiet:
-                warn(
-                    f"A custom settings file was specified: {settings_file} but no configuration "
-                    "was found inside. This can happen when [settings] is used as the config "
-                    "header instead of [isort]. "
-                    "See: https://isort.readthedocs.io/en/latest/configuration/config_files.html"
-                    "#custom-config-files for more information.",
-                    stacklevel=2,
-                )
-        elif settings_path:
-            if not os.path.exists(settings_path):
-                raise InvalidSettingsPath(settings_path)
-
-            settings_path = os.path.abspath(settings_path)
-            project_root, config_settings = _find_config(settings_path)
-        else:
-            config_settings = {}
-            project_root = os.getcwd()
+        project_root, config_settings = self._determine_config_settings(settings_file, settings_path, quiet)
 
         profile_name = config_overrides.get("profile", config_settings.get("profile", ""))
-        profile: dict[str, Any] = {}
-        if profile_name:
-            if profile_name not in profiles:
-                for plugin in entry_points(group="isort.profiles"):
-                    profiles.setdefault(plugin.name, plugin.load())
-
-            if profile_name not in profiles:
-                raise ProfileDoesNotExist(profile_name)
-
-            profile = profiles[profile_name].copy()
-            profile["source"] = f"{profile_name} profile"
+        profile = self._get_profile(profile_name)
+        if profile:
             sources.append(profile)
 
         if config_settings:
@@ -441,29 +495,10 @@ class Config(_Config):
                 else os.getcwd()
             )
 
-        path_root = Path(combined_config.get("directory", project_root)).resolve()
-        path_root = path_root if path_root.is_dir() else path_root.parent
-        if "src_paths" not in combined_config:
-            combined_config["src_paths"] = (path_root / "src", path_root)
-        else:
-            src_paths: list[Path] = []
-            for src_path in combined_config.get("src_paths", ()):
-                full_paths = (
-                    path_root.glob(src_path) if "*" in str(src_path) else [path_root / src_path]
-                )
-                for path in full_paths:
-                    if path not in src_paths:
-                        src_paths.append(path)
-
-            combined_config["src_paths"] = tuple(src_paths)
+        combined_config["src_paths"] = self._expand_src_paths(combined_config, project_root)
 
         if "formatter" in combined_config:
-            for plugin in entry_points(group="isort.formatters"):
-                if plugin.name == combined_config["formatter"]:
-                    combined_config["formatting_function"] = plugin.load()
-                    break
-            else:
-                raise FormattingPluginDoesNotExist(combined_config["formatter"])
+            combined_config["formatting_function"] = self._parse_formatter(combined_config["formatter"])
 
         # Remove any config values that are used for creating config object but
         # aren't defined in dataclass
@@ -482,18 +517,7 @@ class Config(_Config):
                 combined_config.pop(f"{IMPORT_FOOTER_PREFIX}{import_footer_key}")
             combined_config["import_footers"] = import_footers
 
-        unsupported_config_errors = {}
-        for option in set(combined_config.keys()).difference(
-            getattr(_Config, "__dataclass_fields__", {}).keys()
-        ):
-            for source in reversed(sources):
-                if option in source:
-                    unsupported_config_errors[option] = {
-                        "value": source[option],
-                        "source": source["source"],
-                    }
-        if unsupported_config_errors:
-            raise UnsupportedSettings(unsupported_config_errors)
+        self._check_unsupported_config(combined_config, tuple(sources))
 
         super().__init__(sources=tuple(sources), **combined_config)
 
