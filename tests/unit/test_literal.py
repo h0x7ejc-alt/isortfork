@@ -26,3 +26,19 @@ def test_value_assignment_assignments():
 def test_assignments_invalid_section():
     with pytest.raises(exceptions.AssignmentsFormatMismatch):
         isort.literal.assignment("\n\nx = 1\nx++", "assignments", "py")
+
+
+def test_value_last_basic():
+    assert isort.literal.assignment("x = [3, 1, 2]", "value-last", "py") == "x = [1, 2, 3]"
+
+
+def test_value_last_with_duplicates():
+    assert isort.literal.assignment("x = [2, 1, 2, 3, 1]", "value-last", "py") == "x = [1, 2, 3]"
+
+
+def test_value_last_with_strings():
+    assert isort.literal.assignment("x = ['b', 'a', 'b', 'c']", "value-last", "py") == "x = ['a', 'b', 'c']"
+
+
+def test_value_last_empty():
+    assert isort.literal.assignment("x = []", "value-last", "py") == "x = []"

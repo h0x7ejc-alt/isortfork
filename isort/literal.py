@@ -100,6 +100,14 @@ def _unique_list(value: list[Any], printer: ISortPrettyPrinter) -> str:
     return printer.pformat(sorted(set(value)))
 
 
+@register_type("value-last", list)
+def _value_last(value: list[Any], printer: ISortPrettyPrinter) -> str:
+    seen: dict[Any, Any] = {}
+    for item in value:
+        seen[item] = item
+    return printer.pformat(sorted(seen.values()))
+
+
 @register_type("set", set)
 def _set(value: set[Any], printer: ISortPrettyPrinter) -> str:
     return "{" + printer.pformat(tuple(sorted(value)))[1:-1] + "}"
